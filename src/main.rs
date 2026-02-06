@@ -69,14 +69,12 @@ impl Orchestrator {
 
         // Run agents sequentially
         for task in tasks {
+            let agent_name = task.name.clone();
             match self.run_agent(task).await {
                 Ok(result) => results.push(result),
                 Err(e) => {
                     error!("Agent execution failed: {}", e);
-                    results.push(AgentResult::failed(
-                        task.name.clone(),
-                        e.to_string(),
-                    ));
+                    results.push(AgentResult::failed(agent_name, e.to_string()));
                 }
             }
             
@@ -146,7 +144,16 @@ impl Orchestrator {
             ],
             _ => {
                 warn!("Unknown mode '{}', using 'auto'", self.mode);
-                self.get_agent_tasks() // Recursive call with default mode
+                vec![
+                    AgentTask::new(
+                        "monitor",
+                        "Check system health, review logs, and identify any issues that need attention. Provide a brief status report.",
+                    ),
+                    AgentTask::new(
+                        "analyzer",
+                        "Analyze recent activity patterns and suggest optimizations or improvements for the system.",
+                    ),
+                ]
             }
         }
     }
