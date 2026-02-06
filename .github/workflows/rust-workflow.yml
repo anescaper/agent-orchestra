@@ -1,0 +1,192 @@
+name: Rust Agent Orchestra Pipeline
+
+on:
+  schedule:
+    - cron: '0 * * * *'  # Every hour
+  
+  workflow_dispatch:
+    inputs:
+      task_type:
+        description: 'Type of orchestration task'
+        required: false
+        default: 'auto'
+        type: choice
+        options:
+          - auto
+          - research
+          - analysis
+          - monitoring
+  
+  push:
+    branches: [ main ]
+    paths:
+      - 'src/**'
+      - 'Cargo.toml'
+      - 'config/**'
+
+env:
+  DO_REGION: nyc3
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # Job 1: Build and test
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      
+      - name: Cache cargo registry
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/registry
+          key: ${{ runner.os }}-cargo-registry-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo index
+        uses: actions/cache@v3
+        with:
+          path: ~/.cargo/git
+          key: ${{ runner.os }}-cargo-git-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Cache cargo build
+        uses: actions/cache@v3
+        with:
+          path: target
+          key: ${{ runner.os }}-cargo-build-target-${{ hashFiles('**/Cargo.lock') }}
+      
+      - name: Check formatting
+        run: cargo fmt -- --check
+      
+      - name: Run clippy
+        run: cargo clippy -- -D warnings
+      
+      - name: Run tests
+        run: cargo test --verbose
+      
+      - name: Build release
+        run: cargo build --release --verbose
+      
+      - name: Upload binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: agent-orchestra
+          path: target/release/agent-orchestra
+
+  # Job 2: Run orchestrator
+  orchestrate:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Download binary
+        uses: actions/download-artifact@v4
+        with:
+          name: agent-orchestra
+          path: ./
+      
+      - name: Make binary executable
+        run: chmod +x agent-orchestra
+      
+      - name: Create config directory
+        run: mkdir -p config
+      
+      - name: Copy config
+        run: |
+          if [ -f "config/orchestra.yml" ]; then
+            echo "✅ Using existing config"
+          else
+            echo "⚠️  No config found, using defaults"
+          fi
+      
+      - name: Run orchestrator
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+          ORCHESTRATOR_MODE: ${{ github.event.inputs.task_type || 'auto' }}
+          RUST_LOG: info
+        run: ./agent-orchestra
+      
+      - name: Upload results
+        uses: actions/upload-artifact@v4
+        with:
+          name: orchestration-results-${{ github.run_number }}
+          path: outputs/
+          retention-days: 30
+
+  # Job 3: Build and push Docker image
+  docker:
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+      
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_API_TOKEN }}
+      
+      - name: Log in to DO Container Registry
+        run: doctl registry login
+      
+      - name: Build and push
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: Dockerfile
+          push: true
+          tags: |
+            registry.digitalocean.com/agent-orchestra/orchestrator:latest
+            registry.digitalocean.com/agent-orchestra/orchestrator:${{ github.sha }}
+          cache-from: type=registry,ref=registry.digitalocean.com/agent-orchestra/orchestrator:buildcache
+          cache-to: type=registry,ref=registry.digitalocean.com/agent-orchestra/orchestrator:buildcache,mode=max
+
+  # Job 4: Deploy to DigitalOcean
+  deploy:
+    needs: docker
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    steps:
+      - name: Install doctl
+        uses: digitalocean/action-doctl@v2
+        with:
+          token: ${{ secrets.DO_API_TOKEN }}
+      
+      - name: Deploy to App Platform
+        run: |
+          echo "🚀 Triggering deployment..."
+          doctl apps create-deployment ${{ secrets.DO_APP_ID }} --wait
+      
+      - name: Deployment status
+        run: echo "✅ Deployment complete!"
+
+  # Job 5: Monitoring and notifications
+  monitor:
+    needs: [orchestrate, deploy]
+    runs-on: ubuntu-latest
+    if: always()
+    steps:
+      - name: Check workflow status
+        run: |
+          if [ "${{ needs.orchestrate.result }}" == "success" ] && [ "${{ needs.deploy.result }}" == "success" ]; then
+            echo "✅ All jobs succeeded"
+          else
+            echo "❌ Some jobs failed"
+            exit 1
+          fi
+      
+      - name: Send notification on failure
+        if: failure()
+        run: |
+          echo "Would send notification here (Slack, Discord, etc.)"
+          # Add your notification logic

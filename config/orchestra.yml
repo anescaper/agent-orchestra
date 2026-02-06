@@ -1,0 +1,93 @@
+# Agent Orchestra Configuration
+
+orchestra:
+  # Name of your orchestration system
+  name: "Agent Orchestra"
+  
+  # Version
+  version: "1.0.0"
+  
+  # Default mode when not specified
+  default_mode: "auto"
+  
+  # Scheduling configuration
+  schedule:
+    # How often to run (in pipeline, this is controlled by cron)
+    interval_hours: 1
+    
+    # Retry configuration
+    max_retries: 3
+    retry_delay_seconds: 60
+
+# Agent configurations
+agents:
+  monitor:
+    enabled: true
+    timeout_seconds: 120
+    
+  analyzer:
+    enabled: true
+    timeout_seconds: 180
+    
+  researcher:
+    enabled: true
+    timeout_seconds: 300
+    
+  reporter:
+    enabled: true
+    timeout_seconds: 120
+
+# Output configuration
+outputs:
+  # Where to save results
+  directory: "outputs"
+  
+  # Retention period in days
+  retention_days: 30
+  
+  # File formats
+  formats:
+    - json
+    - txt
+
+# DigitalOcean configuration
+digitalocean:
+  region: "nyc3"
+  
+  # Container registry
+  registry: "agent-orchestra"
+  
+  # App platform settings (if using)
+  app:
+    instance_size: "basic-xxs"
+    instance_count: 1
+
+# Notifications (configure your preferred method)
+notifications:
+  # Enable/disable notifications
+  enabled: false
+  
+  # Notification channels
+  channels:
+    slack:
+      enabled: false
+      webhook_url: ""
+    
+    email:
+      enabled: false
+      recipients: []
+    
+    discord:
+      enabled: false
+      webhook_url: ""
+
+# Logging configuration
+logging:
+  level: "INFO"
+  format: "json"
+  
+# Feature flags
+features:
+  parallel_execution: false
+  auto_scaling: false
+  health_monitoring: true
