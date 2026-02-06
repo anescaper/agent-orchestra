@@ -1,10 +1,51 @@
 use anyhow::{Context, Result};
+use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
 const MODEL: &str = "claude-sonnet-4-20250514";
+
+/// The two supported client modes.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ClientMode {
+    Api,
+    ClaudeCode,
+}
+
+impl fmt::Display for ClientMode {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ClientMode::Api => write!(f, "api"),
+            ClientMode::ClaudeCode => write!(f, "claude-code"),
+        }
+    }
+}
+
+impl ClientMode {
+    pub fn from_str(s: &str) -> Result<Self> {
+        match s {
+            "api" => Ok(ClientMode::Api),
+            "claude-code" => Ok(ClientMode::ClaudeCode),
+            other => anyhow::bail!(
+                "Invalid CLIENT_MODE '{}'. Must be 'api' or 'claude-code'.",
+                other
+            ),
+        }
+    }
+}
+
+/// Trait for sending prompts to a Claude backend.
+#[async_trait]
+pub trait AgentClient: Send + Sync {
+    async fn send_message(&self, prompt: &str) -> Result<String>;
+}
+
+// ---------------------------------------------------------------------------
+// API client (paid) — uses the Anthropic HTTP API
+// ---------------------------------------------------------------------------
 
 #[derive(Debug, Serialize)]
 struct MessageRequest {
@@ -38,20 +79,23 @@ struct ContentBlock {
     text: String,
 }
 
-pub struct ClaudeClient {
+pub struct ApiClient {
     client: Client,
     api_key: String,
 }
 
-impl ClaudeClient {
+impl ApiClient {
     pub fn new(api_key: String) -> Self {
         Self {
             client: Client::new(),
             api_key,
         }
     }
+}
 
-    pub async fn send_message(&self, prompt: &str) -> Result<String> {
+#[async_trait]
+impl AgentClient for ApiClient {
+    async fn send_message(&self, prompt: &str) -> Result<String> {
         let request = MessageRequest {
             model: MODEL.to_string(),
             max_tokens: 4096,
@@ -83,7 +127,6 @@ impl ClaudeClient {
             .await
             .context("Failed to parse API response")?;
 
-        // Extract text from first content block
         let text = message_response
             .content
             .first()
@@ -94,13 +137,105 @@ impl ClaudeClient {
     }
 }
 
+// ---------------------------------------------------------------------------
+// CLI client (free) — shells out to `claude -p "prompt"`
+// ---------------------------------------------------------------------------
+
+pub struct CliClient {
+    cli_path: String,
+}
+
+impl CliClient {
+    pub fn new() -> Self {
+        Self {
+            cli_path: "/home/claude/.local/bin/claude".to_string(),
+        }
+    }
+}
+
+#[async_trait]
+impl AgentClient for CliClient {
+    async fn send_message(&self, prompt: &str) -> Result<String> {
+        let output = tokio::process::Command::new(&self.cli_path)
+            .arg("-p")
+            .arg(prompt)
+            .output()
+            .await
+            .context("Failed to execute claude CLI")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            anyhow::bail!("claude CLI exited with {}: {}", output.status, stderr);
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        Ok(text)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Factory
+// ---------------------------------------------------------------------------
+
+pub fn create_client(mode: &ClientMode, api_key: Option<String>) -> Result<Box<dyn AgentClient>> {
+    match mode {
+        ClientMode::Api => {
+            let key = api_key.context(
+                "ANTHROPIC_API_KEY is required when CLIENT_MODE=api",
+            )?;
+            Ok(Box::new(ApiClient::new(key)))
+        }
+        ClientMode::ClaudeCode => Ok(Box::new(CliClient::new())),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    #[tokio::test]
-    async fn test_client_creation() {
-        let client = ClaudeClient::new("test-key".to_string());
+    #[test]
+    fn test_api_client_creation() {
+        let client = ApiClient::new("test-key".to_string());
         assert_eq!(client.api_key, "test-key");
+    }
+
+    #[test]
+    fn test_cli_client_creation() {
+        let client = CliClient::new();
+        assert_eq!(client.cli_path, "/home/claude/.local/bin/claude");
+    }
+
+    #[test]
+    fn test_client_mode_from_str() {
+        assert_eq!(ClientMode::from_str("api").unwrap(), ClientMode::Api);
+        assert_eq!(
+            ClientMode::from_str("claude-code").unwrap(),
+            ClientMode::ClaudeCode
+        );
+        assert!(ClientMode::from_str("invalid").is_err());
+    }
+
+    #[test]
+    fn test_client_mode_display() {
+        assert_eq!(ClientMode::Api.to_string(), "api");
+        assert_eq!(ClientMode::ClaudeCode.to_string(), "claude-code");
+    }
+
+    #[test]
+    fn test_create_client_api_requires_key() {
+        let result = create_client(&ClientMode::Api, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_client_api_with_key() {
+        let result = create_client(&ClientMode::Api, Some("sk-test".to_string()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_client_claude_code() {
+        let result = create_client(&ClientMode::ClaudeCode, None);
+        assert!(result.is_ok());
     }
 }

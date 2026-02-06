@@ -11,7 +11,7 @@ mod client;
 mod config;
 
 use agents::{AgentResult, AgentTask};
-use client::ClaudeClient;
+use client::{AgentClient, ClientMode, create_client};
 use config::Config;
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -22,7 +22,7 @@ pub struct OrchestrationResult {
 }
 
 pub struct Orchestrator {
-    client: ClaudeClient,
+    client: Box<dyn AgentClient>,
     config: Config,
     mode: String,
     timestamp: DateTime<Utc>,
@@ -34,7 +34,17 @@ impl Orchestrator {
         // Load environment variables
         dotenv::dotenv().ok();
 
-        let api_key = env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY must be set")?;
+        // Determine client mode (default: claude-code)
+        let client_mode_str =
+            env::var("CLIENT_MODE").unwrap_or_else(|_| "claude-code".to_string());
+        let client_mode = ClientMode::from_str(&client_mode_str)?;
+
+        // API key is only required for API mode
+        let api_key = env::var("ANTHROPIC_API_KEY").ok();
+
+        let client = create_client(&client_mode, api_key)?;
+
+        info!("Client mode: {}", client_mode);
 
         let mode = env::var("ORCHESTRATOR_MODE").unwrap_or_else(|_| "auto".to_string());
 
@@ -46,7 +56,7 @@ impl Orchestrator {
         let config = Config::load("config/orchestra.yml").unwrap_or_else(|_| Config::default());
 
         Ok(Self {
-            client: ClaudeClient::new(api_key),
+            client,
             config,
             mode,
             timestamp,
@@ -55,11 +65,11 @@ impl Orchestrator {
     }
 
     pub async fn run(&self) -> Result<()> {
-        info!("🎭 Starting Agent Orchestra - Mode: {}", self.mode);
-        info!("📅 Timestamp: {}", self.timestamp.format("%Y%m%d-%H%M%S"));
+        info!("Starting Agent Orchestra - Mode: {}", self.mode);
+        info!("Timestamp: {}", self.timestamp.format("%Y%m%d-%H%M%S"));
 
         let tasks = self.get_agent_tasks();
-        info!("📋 Running {} agents", tasks.len());
+        info!("Running {} agents", tasks.len());
 
         let mut results = Vec::new();
 
@@ -81,12 +91,12 @@ impl Orchestrator {
         self.save_results(&results)?;
         self.generate_summary(&results)?;
 
-        info!("🎉 Orchestration complete!");
+        info!("Orchestration complete!");
         Ok(())
     }
 
     async fn run_agent(&self, task: AgentTask) -> Result<AgentResult> {
-        info!("🤖 Running agent: {}", task.name);
+        info!("Running agent: {}", task.name);
 
         let response = self
             .client
@@ -94,7 +104,7 @@ impl Orchestrator {
             .await
             .context("Failed to send message to Claude")?;
 
-        info!("✅ Agent {} completed", task.name);
+        info!("Agent {} completed", task.name);
 
         Ok(AgentResult::success(task.name, response))
     }
@@ -197,7 +207,7 @@ impl Orchestrator {
 
         fs::write(&output_file, json).context("Failed to write results file")?;
 
-        info!("💾 Results saved to {}", output_file.display());
+        info!("Results saved to {}", output_file.display());
         Ok(())
     }
 
@@ -235,7 +245,7 @@ impl Orchestrator {
 
         fs::write(&summary_file, summary).context("Failed to write summary file")?;
 
-        info!("📊 Summary saved to {}", summary_file.display());
+        info!("Summary saved to {}", summary_file.display());
         Ok(())
     }
 }

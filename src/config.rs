@@ -6,6 +6,8 @@ use std::path::Path;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
     pub orchestra: OrchestraConfig,
+    #[serde(default)]
+    pub client: ClientConfig,
     pub agents: AgentsConfig,
     pub outputs: OutputsConfig,
     #[serde(default)]
@@ -16,6 +18,24 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub features: FeaturesConfig,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ClientConfig {
+    #[serde(default = "default_client_mode")]
+    pub default_mode: String,
+}
+
+fn default_client_mode() -> String {
+    "claude-code".to_string()
+}
+
+impl Default for ClientConfig {
+    fn default() -> Self {
+        Self {
+            default_mode: default_client_mode(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -118,6 +138,7 @@ impl Config {
                 default_mode: "auto".to_string(),
                 schedule: None,
             },
+            client: ClientConfig::default(),
             agents: AgentsConfig {
                 monitor: AgentConfig {
                     enabled: true,

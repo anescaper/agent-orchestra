@@ -19,6 +19,11 @@ orchestra:
     max_retries: 3
     retry_delay_seconds: 60
 
+# Client mode: "claude-code" (free, uses claude CLI) or "api" (paid, uses Anthropic HTTP API)
+# Can be overridden by CLIENT_MODE env var
+client:
+  default_mode: "claude-code"
+
 # Agent configurations
 agents:
   monitor:
