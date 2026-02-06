@@ -1,6 +1,6 @@
 use anyhow::{Context, Result};
-use serde::{Deserialize, Serialize};
 use reqwest::Client;
+use serde::{Deserialize, Serialize};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -61,7 +61,8 @@ impl ClaudeClient {
             }],
         };
 
-        let response = self.client
+        let response = self
+            .client
             .post(ANTHROPIC_API_URL)
             .header("x-api-key", &self.api_key)
             .header("anthropic-version", ANTHROPIC_VERSION)

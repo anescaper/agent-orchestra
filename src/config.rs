@@ -1,7 +1,7 @@
+use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
-use anyhow::Result;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -77,8 +77,12 @@ pub struct LoggingConfig {
     pub format: String,
 }
 
-fn default_log_level() -> String { "INFO".to_string() }
-fn default_log_format() -> String { "json".to_string() }
+fn default_log_level() -> String {
+    "INFO".to_string()
+}
+fn default_log_format() -> String {
+    "json".to_string()
+}
 
 impl Default for LoggingConfig {
     fn default() -> Self {

@@ -1,16 +1,16 @@
 use anyhow::{Context, Result};
+use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use std::env;
 use std::fs;
 use std::path::PathBuf;
-use chrono::{DateTime, Utc};
-use tracing::{info, error, warn};
+use tracing::{error, info, warn};
 
 mod agents;
 mod client;
 mod config;
 
-use agents::{AgentTask, AgentResult};
+use agents::{AgentResult, AgentTask};
 use client::ClaudeClient;
 use config::Config;
 
@@ -34,20 +34,16 @@ impl Orchestrator {
         // Load environment variables
         dotenv::dotenv().ok();
 
-        let api_key = env::var("ANTHROPIC_API_KEY")
-            .context("ANTHROPIC_API_KEY must be set")?;
-        
-        let mode = env::var("ORCHESTRATOR_MODE")
-            .unwrap_or_else(|_| "auto".to_string());
-        
-        let timestamp = Utc::now();
-        
-        let output_dir = PathBuf::from("outputs");
-        fs::create_dir_all(&output_dir)
-            .context("Failed to create output directory")?;
+        let api_key = env::var("ANTHROPIC_API_KEY").context("ANTHROPIC_API_KEY must be set")?;
 
-        let config = Config::load("config/orchestra.yml")
-            .unwrap_or_else(|_| Config::default());
+        let mode = env::var("ORCHESTRATOR_MODE").unwrap_or_else(|_| "auto".to_string());
+
+        let timestamp = Utc::now();
+
+        let output_dir = PathBuf::from("outputs");
+        fs::create_dir_all(&output_dir).context("Failed to create output directory")?;
+
+        let config = Config::load("config/orchestra.yml").unwrap_or_else(|_| Config::default());
 
         Ok(Self {
             client: ClaudeClient::new(api_key),
@@ -77,7 +73,7 @@ impl Orchestrator {
                     results.push(AgentResult::failed(agent_name, e.to_string()));
                 }
             }
-            
+
             // Small delay between agents
             tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
         }
@@ -92,7 +88,10 @@ impl Orchestrator {
     async fn run_agent(&self, task: AgentTask) -> Result<AgentResult> {
         info!("🤖 Running agent: {}", task.name);
 
-        let response = self.client.send_message(&task.prompt).await
+        let response = self
+            .client
+            .send_message(&task.prompt)
+            .await
             .context("Failed to send message to Claude")?;
 
         info!("✅ Agent {} completed", task.name);
@@ -111,7 +110,9 @@ impl Orchestrator {
                 "reporter" | "alert_manager" => agents.reporter.enabled,
                 _ => true,
             };
-            if enabled { Some(task) } else {
+            if enabled {
+                Some(task)
+            } else {
                 warn!("Skipping disabled agent: {}", name);
                 None
             }
@@ -181,7 +182,9 @@ impl Orchestrator {
 
     fn save_results(&self, results: &[AgentResult]) -> Result<()> {
         let timestamp_str = self.timestamp.format("%Y%m%d-%H%M%S").to_string();
-        let output_file = self.output_dir.join(format!("results-{}.json", timestamp_str));
+        let output_file = self
+            .output_dir
+            .join(format!("results-{}.json", timestamp_str));
 
         let orchestration = OrchestrationResult {
             timestamp: self.timestamp,
@@ -189,11 +192,10 @@ impl Orchestrator {
             results: results.to_vec(),
         };
 
-        let json = serde_json::to_string_pretty(&orchestration)
-            .context("Failed to serialize results")?;
+        let json =
+            serde_json::to_string_pretty(&orchestration).context("Failed to serialize results")?;
 
-        fs::write(&output_file, json)
-            .context("Failed to write results file")?;
+        fs::write(&output_file, json).context("Failed to write results file")?;
 
         info!("💾 Results saved to {}", output_file.display());
         Ok(())
@@ -201,7 +203,9 @@ impl Orchestrator {
 
     fn generate_summary(&self, results: &[AgentResult]) -> Result<()> {
         let timestamp_str = self.timestamp.format("%Y%m%d-%H%M%S").to_string();
-        let summary_file = self.output_dir.join(format!("summary-{}.txt", timestamp_str));
+        let summary_file = self
+            .output_dir
+            .join(format!("summary-{}.txt", timestamp_str));
 
         let successful = results.iter().filter(|r| r.status == "success").count();
         let failed = results.len() - successful;
@@ -219,7 +223,7 @@ impl Orchestrator {
             summary.push_str("\n──────────────────────────────────────────────────\n");
             summary.push_str(&format!("Agent: {}\n", result.agent));
             summary.push_str(&format!("Status: {}\n", result.status));
-            
+
             if result.status == "success" {
                 if let Some(ref output) = result.output {
                     summary.push_str(&format!("Output:\n{}\n", output));
@@ -229,8 +233,7 @@ impl Orchestrator {
             }
         }
 
-        fs::write(&summary_file, summary)
-            .context("Failed to write summary file")?;
+        fs::write(&summary_file, summary).context("Failed to write summary file")?;
 
         info!("📊 Summary saved to {}", summary_file.display());
         Ok(())
@@ -243,7 +246,7 @@ async fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             tracing_subscriber::EnvFilter::from_default_env()
-                .add_directive("agent_orchestra=info".parse().unwrap())
+                .add_directive("agent_orchestra=info".parse().unwrap()),
         )
         .init();
 

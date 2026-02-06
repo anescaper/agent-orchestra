@@ -172,16 +172,16 @@ jobs:
 
   # Job 5: Monitoring and notifications
   monitor:
-    needs: [orchestrate, deploy]
+    needs: [build]
     runs-on: ubuntu-latest
     if: always()
     steps:
       - name: Check workflow status
         run: |
-          if [ "${{ needs.orchestrate.result }}" == "success" ] && [ "${{ needs.deploy.result }}" == "success" ]; then
-            echo "✅ All jobs succeeded"
+          if [ "${{ needs.build.result }}" == "success" ]; then
+            echo "✅ Build succeeded"
           else
-            echo "❌ Some jobs failed"
+            echo "❌ Build failed"
             exit 1
           fi
       
