@@ -159,13 +159,16 @@ impl AgentClient for CliClient {
         let output = tokio::process::Command::new(&self.cli_path)
             .arg("-p")
             .arg(prompt)
+            .env_remove("ANTHROPIC_API_KEY")
             .output()
             .await
             .context("Failed to execute claude CLI")?;
 
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            anyhow::bail!("claude CLI exited with {}: {}", output.status, stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let detail = if !stderr.is_empty() { &stderr } else { &stdout };
+            anyhow::bail!("claude CLI exited with {}: {}", output.status, detail.trim());
         }
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();

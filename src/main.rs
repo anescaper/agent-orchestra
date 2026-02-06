@@ -79,8 +79,8 @@ impl Orchestrator {
             match self.run_agent(task).await {
                 Ok(result) => results.push(result),
                 Err(e) => {
-                    error!("Agent execution failed: {}", e);
-                    results.push(AgentResult::failed(agent_name, e.to_string()));
+                    error!("Agent execution failed: {:?}", e);
+                    results.push(AgentResult::failed(agent_name, format!("{:?}", e)));
                 }
             }
 
