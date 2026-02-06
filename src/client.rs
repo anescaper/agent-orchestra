@@ -33,6 +33,7 @@ struct MessageResponse {
 #[derive(Debug, Deserialize)]
 struct ContentBlock {
     #[serde(rename = "type")]
+    #[allow(dead_code)]
     content_type: String,
     text: String,
 }

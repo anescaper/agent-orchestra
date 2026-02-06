@@ -101,61 +101,82 @@ impl Orchestrator {
     }
 
     fn get_agent_tasks(&self) -> Vec<AgentTask> {
-        match self.mode.as_str() {
+        let agents = &self.config.agents;
+
+        let filter = |name: &str, task: AgentTask| -> Option<AgentTask> {
+            let enabled = match name {
+                "monitor" | "health_checker" => agents.monitor.enabled,
+                "analyzer" | "data_analyst" | "synthesizer" => agents.analyzer.enabled,
+                "researcher" => agents.researcher.enabled,
+                "reporter" | "alert_manager" => agents.reporter.enabled,
+                _ => true,
+            };
+            if enabled { Some(task) } else {
+                warn!("Skipping disabled agent: {}", name);
+                None
+            }
+        };
+
+        let tasks: Vec<AgentTask> = match self.mode.as_str() {
             "auto" => vec![
-                AgentTask::new(
+                filter("monitor", AgentTask::new(
                     "monitor",
                     "Check system health, review logs, and identify any issues that need attention. Provide a brief status report."
-                ),
-                AgentTask::new(
+                )),
+                filter("analyzer", AgentTask::new(
                     "analyzer",
                     "Analyze recent activity patterns and suggest optimizations or improvements for the system."
-                ),
+                )),
             ],
             "research" => vec![
-                AgentTask::new(
+                filter("researcher", AgentTask::new(
                     "researcher",
                     "Research the latest developments in AI agent orchestration and multi-agent systems. Summarize key findings."
-                ),
-                AgentTask::new(
+                )),
+                filter("synthesizer", AgentTask::new(
                     "synthesizer",
                     "Based on current trends, suggest improvements to our agent orchestration framework."
-                ),
+                )),
             ],
             "analysis" => vec![
-                AgentTask::new(
+                filter("data_analyst", AgentTask::new(
                     "data_analyst",
                     "Analyze system performance metrics and identify bottlenecks or areas for improvement."
-                ),
-                AgentTask::new(
+                )),
+                filter("reporter", AgentTask::new(
                     "reporter",
                     "Generate a comprehensive report on system status and recommendations."
-                ),
+                )),
             ],
             "monitoring" => vec![
-                AgentTask::new(
+                filter("health_checker", AgentTask::new(
                     "health_checker",
                     "Perform comprehensive health checks on all system components and services."
-                ),
-                AgentTask::new(
+                )),
+                filter("alert_manager", AgentTask::new(
                     "alert_manager",
                     "Review recent alerts and events, prioritize issues, and suggest actions."
-                ),
+                )),
             ],
             _ => {
                 warn!("Unknown mode '{}', using 'auto'", self.mode);
                 vec![
-                    AgentTask::new(
+                    filter("monitor", AgentTask::new(
                         "monitor",
                         "Check system health, review logs, and identify any issues that need attention. Provide a brief status report.",
-                    ),
-                    AgentTask::new(
+                    )),
+                    filter("analyzer", AgentTask::new(
                         "analyzer",
                         "Analyze recent activity patterns and suggest optimizations or improvements for the system.",
-                    ),
+                    )),
                 ]
             }
+        }.into_iter().flatten().collect();
+
+        if tasks.is_empty() {
+            warn!("All agents disabled for mode '{}'", self.mode);
         }
+        tasks
     }
 
     fn save_results(&self, results: &[AgentResult]) -> Result<()> {

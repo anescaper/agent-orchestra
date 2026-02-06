@@ -8,7 +8,14 @@ pub struct Config {
     pub orchestra: OrchestraConfig,
     pub agents: AgentsConfig,
     pub outputs: OutputsConfig,
+    #[serde(default)]
     pub digitalocean: DigitalOceanConfig,
+    #[serde(default)]
+    pub notifications: NotificationsConfig,
+    #[serde(default)]
+    pub logging: LoggingConfig,
+    #[serde(default)]
+    pub features: FeaturesConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -16,6 +23,15 @@ pub struct OrchestraConfig {
     pub name: String,
     pub version: String,
     pub default_mode: String,
+    #[serde(default)]
+    pub schedule: Option<ScheduleConfig>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScheduleConfig {
+    pub interval_hours: u32,
+    pub max_retries: u32,
+    pub retry_delay_seconds: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -39,10 +55,48 @@ pub struct OutputsConfig {
     pub formats: Vec<String>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct DigitalOceanConfig {
+    #[serde(default)]
     pub region: String,
+    #[serde(default)]
     pub registry: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct NotificationsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoggingConfig {
+    #[serde(default = "default_log_level")]
+    pub level: String,
+    #[serde(default = "default_log_format")]
+    pub format: String,
+}
+
+fn default_log_level() -> String { "INFO".to_string() }
+fn default_log_format() -> String { "json".to_string() }
+
+impl Default for LoggingConfig {
+    fn default() -> Self {
+        Self {
+            level: default_log_level(),
+            format: default_log_format(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, Default)]
+pub struct FeaturesConfig {
+    #[serde(default)]
+    pub parallel_execution: bool,
+    #[serde(default)]
+    pub auto_scaling: bool,
+    #[serde(default)]
+    pub health_monitoring: bool,
 }
 
 impl Config {
@@ -58,6 +112,7 @@ impl Config {
                 name: "Agent Orchestra".to_string(),
                 version: "1.0.0".to_string(),
                 default_mode: "auto".to_string(),
+                schedule: None,
             },
             agents: AgentsConfig {
                 monitor: AgentConfig {
@@ -86,6 +141,9 @@ impl Config {
                 region: "nyc3".to_string(),
                 registry: "agent-orchestra".to_string(),
             },
+            notifications: NotificationsConfig::default(),
+            logging: LoggingConfig::default(),
+            features: FeaturesConfig::default(),
         }
     }
 }
