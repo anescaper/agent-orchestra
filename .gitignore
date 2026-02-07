@@ -13,6 +13,10 @@ outputs/
 *.swp
 *.swo
 
+# Dashboard
+dashboard/dashboard.db
+dashboard/.venv/
+
 # OS
 .DS_Store
 Thumbs.db

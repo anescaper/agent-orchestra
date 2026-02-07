@@ -1,0 +1,250 @@
+"""FastAPI server - REST endpoints, WebSocket handlers, static/template serving."""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from contextlib import asynccontextmanager
+from datetime import datetime, timezone
+
+import yaml
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Query
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
+
+from . import config, db
+from .orchestrator import OrchestratorControl
+from .watcher import backfill_existing_outputs, watch_outputs
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
+log = logging.getLogger("dashboard.server")
+
+
+# ── WebSocket Connection Manager ────────────────────────────────────────
+
+class ConnectionManager:
+    """Manage WebSocket connections for real-time updates."""
+
+    def __init__(self):
+        self._status_connections: list[WebSocket] = []
+        self._log_connections: list[WebSocket] = []
+
+    async def connect_status(self, ws: WebSocket):
+        await ws.accept()
+        self._status_connections.append(ws)
+
+    async def connect_logs(self, ws: WebSocket):
+        await ws.accept()
+        self._log_connections.append(ws)
+
+    def disconnect_status(self, ws: WebSocket):
+        if ws in self._status_connections:
+            self._status_connections.remove(ws)
+
+    def disconnect_logs(self, ws: WebSocket):
+        if ws in self._log_connections:
+            self._log_connections.remove(ws)
+
+    async def broadcast_status(self, data: dict):
+        dead = []
+        for ws in self._status_connections:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect_status(ws)
+
+    async def broadcast_log(self, entry: dict):
+        dead = []
+        for ws in self._log_connections:
+            try:
+                await ws.send_json(entry)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect_logs(ws)
+
+
+manager = ConnectionManager()
+orchestrator = OrchestratorControl()
+
+
+# ── Orchestrator log callback ───────────────────────────────────────────
+
+async def on_orchestrator_log(level: str, message: str):
+    ts = datetime.now(timezone.utc).isoformat()
+    await db.insert_log(ts, level, message, source="orchestrator")
+    await manager.broadcast_log({
+        "timestamp": ts,
+        "level": level,
+        "message": message,
+        "source": "orchestrator",
+    })
+
+orchestrator.set_log_callback(on_orchestrator_log)
+
+
+# ── New execution callback ──────────────────────────────────────────────
+
+async def on_new_execution(execution_id: int):
+    execution = await db.get_execution(execution_id)
+    if execution:
+        await manager.broadcast_status({"type": "new_execution", "data": execution})
+        ts = datetime.now(timezone.utc).isoformat()
+        await db.insert_log(ts, "info", f"New execution #{execution_id} ingested", source="watcher")
+        await manager.broadcast_log({
+            "timestamp": ts,
+            "level": "info",
+            "message": f"New execution #{execution_id} ingested",
+            "source": "watcher",
+        })
+
+
+# ── Lifespan ────────────────────────────────────────────────────────────
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    # Startup
+    await db.init_db()
+    count = await backfill_existing_outputs()
+    log.info("Database initialized, backfilled %d files", count)
+
+    # Start file watcher in background
+    watcher_task = asyncio.create_task(watch_outputs(on_new_execution=on_new_execution))
+
+    ts = datetime.now(timezone.utc).isoformat()
+    await db.insert_log(ts, "info", f"Dashboard started, backfilled {count} output files", source="dashboard")
+
+    yield
+
+    # Shutdown
+    watcher_task.cancel()
+    try:
+        await watcher_task
+    except asyncio.CancelledError:
+        pass
+    if orchestrator.running:
+        await orchestrator.stop()
+    await db.close_db()
+
+
+# ── App ─────────────────────────────────────────────────────────────────
+
+app = FastAPI(title="Agent Orchestra Dashboard", lifespan=lifespan)
+
+# Mount static files
+app.mount("/static", StaticFiles(directory=str(config.STATIC_DIR)), name="static")
+templates = Jinja2Templates(directory=str(config.TEMPLATES_DIR))
+
+
+# ── Pages ───────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def index(request: Request):
+    return templates.TemplateResponse("index.html", {"request": request})
+
+
+# ── REST API ────────────────────────────────────────────────────────────
+
+@app.get("/api/stats")
+async def api_stats():
+    return await db.get_stats()
+
+
+@app.get("/api/executions")
+async def api_executions(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+    executions = await db.get_executions(limit=limit, offset=offset)
+    total = await db.get_execution_count()
+    return {"executions": executions, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/executions/{execution_id}")
+async def api_execution_detail(execution_id: int):
+    execution = await db.get_execution(execution_id)
+    if not execution:
+        return {"error": "Not found"}, 404
+    results = await db.get_agent_results(execution_id)
+    return {**execution, "results": results}
+
+
+@app.get("/api/agents")
+async def api_agents():
+    return await db.get_agent_summaries()
+
+
+@app.get("/api/costs")
+async def api_costs():
+    return await db.get_cost_breakdown()
+
+
+@app.get("/api/config")
+async def api_config():
+    try:
+        with open(config.CONFIG_FILE) as f:
+            return yaml.safe_load(f)
+    except FileNotFoundError:
+        return {"error": "Config file not found"}
+
+
+@app.get("/api/status")
+async def api_status():
+    stats = await db.get_stats()
+    return {
+        "orchestrator": orchestrator.status(),
+        "stats": stats,
+        "outputs_dir": str(config.OUTPUTS_DIR),
+        "db_path": str(config.DB_PATH),
+    }
+
+
+@app.get("/api/logs")
+async def api_logs(limit: int = Query(100, ge=1, le=500), level: str | None = None):
+    return await db.get_logs(limit=limit, level=level)
+
+
+# ── Control endpoints ──────────────────────────────────────────────────
+
+@app.post("/api/orchestrator/start")
+async def api_start(mode: str = Query("auto"), client_mode: str = Query("hybrid")):
+    result = await orchestrator.start(mode=mode, client_mode=client_mode)
+    return result
+
+
+@app.post("/api/orchestrator/stop")
+async def api_stop():
+    result = await orchestrator.stop()
+    return result
+
+
+# ── WebSocket endpoints ────────────────────────────────────────────────
+
+@app.websocket("/ws/status")
+async def ws_status(ws: WebSocket):
+    await manager.connect_status(ws)
+    try:
+        while True:
+            # Keep connection alive, listen for pings
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_status(ws)
+
+
+@app.websocket("/ws/logs")
+async def ws_logs(ws: WebSocket):
+    await manager.connect_logs(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_logs(ws)
+
+
+# ── Entry point ─────────────────────────────────────────────────────────
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host=config.HOST, port=config.PORT)

@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Agent Orchestra Dashboard</title>
+    <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+    <header>
+        <div class="header-left">
+            <h1>Agent Orchestra</h1>
+            <span class="version">Dashboard</span>
+        </div>
+        <div class="header-right">
+            <span id="connection-status" class="badge badge-gray">Disconnected</span>
+            <span id="clock"></span>
+        </div>
+    </header>
+
+    <nav class="tabs">
+        <button class="tab active" data-panel="overview">Overview</button>
+        <button class="tab" data-panel="agents">Agents</button>
+        <button class="tab" data-panel="history">History</button>
+        <button class="tab" data-panel="logs">Logs</button>
+        <button class="tab" data-panel="control">Control</button>
+        <button class="tab" data-panel="costs">Costs</button>
+    </nav>
+
+    <main>
+        <!-- Overview Panel -->
+        <section id="panel-overview" class="panel active">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Executions</div>
+                    <div class="stat-value" id="stat-total-exec">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Agents Run</div>
+                    <div class="stat-value" id="stat-total-agents">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Success Rate</div>
+                    <div class="stat-value" id="stat-success-rate">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Est. Cost</div>
+                    <div class="stat-value" id="stat-total-cost">-</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Recent Executions</h2>
+                <div id="recent-executions" class="table-wrap">
+                    <p class="muted">Loading...</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Orchestrator Status</h2>
+                <div id="orch-status">
+                    <p class="muted">Loading...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Agents Panel -->
+        <section id="panel-agents" class="panel">
+            <div class="card">
+                <h2>Agent Performance</h2>
+                <div id="agents-table" class="table-wrap">
+                    <p class="muted">Loading...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- History Panel -->
+        <section id="panel-history" class="panel">
+            <div class="card">
+                <h2>Execution History</h2>
+                <div class="controls-row">
+                    <button id="history-prev" class="btn btn-sm" disabled>Prev</button>
+                    <span id="history-info" class="muted">Page 1</span>
+                    <button id="history-next" class="btn btn-sm">Next</button>
+                </div>
+                <div id="history-table" class="table-wrap">
+                    <p class="muted">Loading...</p>
+                </div>
+            </div>
+
+            <!-- Execution detail modal -->
+            <div id="exec-detail-modal" class="modal hidden">
+                <div class="modal-content card">
+                    <div class="modal-header">
+                        <h2 id="exec-detail-title">Execution Detail</h2>
+                        <button class="btn btn-sm" id="close-modal">&times;</button>
+                    </div>
+                    <div id="exec-detail-body">
+                        <p class="muted">Loading...</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Logs Panel -->
+        <section id="panel-logs" class="panel">
+            <div class="card logs-card">
+                <div class="logs-header">
+                    <h2>Live Logs</h2>
+                    <div class="controls-row">
+                        <select id="log-level-filter">
+                            <option value="">All Levels</option>
+                            <option value="info">Info</option>
+                            <option value="warn">Warning</option>
+                            <option value="error">Error</option>
+                        </select>
+                        <button class="btn btn-sm" id="clear-logs">Clear</button>
+                    </div>
+                </div>
+                <div id="log-container" class="log-container">
+                    <div class="muted">Connecting to log stream...</div>
+                </div>
+            </div>
+        </section>
+
+        <!-- Control Panel -->
+        <section id="panel-control" class="panel">
+            <div class="card">
+                <h2>Orchestrator Control</h2>
+                <div class="control-grid">
+                    <div class="control-group">
+                        <label>Mode</label>
+                        <select id="ctrl-mode">
+                            <option value="auto">Auto</option>
+                            <option value="research">Research</option>
+                            <option value="analysis">Analysis</option>
+                            <option value="monitoring">Monitoring</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>Client Mode</label>
+                        <select id="ctrl-client-mode">
+                            <option value="hybrid">Hybrid</option>
+                            <option value="api">API</option>
+                            <option value="claude-code">Claude Code</option>
+                        </select>
+                    </div>
+                    <div class="control-group">
+                        <label>&nbsp;</label>
+                        <div class="btn-group">
+                            <button class="btn btn-success" id="btn-start">Start</button>
+                            <button class="btn btn-danger" id="btn-stop" disabled>Stop</button>
+                        </div>
+                    </div>
+                </div>
+                <div id="control-status" class="mt-1">
+                    <p class="muted">Not running</p>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Configuration</h2>
+                <pre id="config-display" class="code-block">Loading...</pre>
+            </div>
+        </section>
+
+        <!-- Costs Panel -->
+        <section id="panel-costs" class="panel">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Total Estimated Cost</div>
+                    <div class="stat-value" id="cost-total">-</div>
+                </div>
+            </div>
+
+            <div class="two-col">
+                <div class="card">
+                    <h2>Cost by Mode</h2>
+                    <div id="cost-by-mode" class="table-wrap">
+                        <p class="muted">Loading...</p>
+                    </div>
+                </div>
+                <div class="card">
+                    <h2>Cost by Agent</h2>
+                    <div id="cost-by-agent" class="table-wrap">
+                        <p class="muted">Loading...</p>
+                    </div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Cost by Date</h2>
+                <div id="cost-by-date" class="table-wrap">
+                    <p class="muted">Loading...</p>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <footer>
+        <span class="muted">Agent Orchestra Dashboard &bull; FastAPI + SQLite + WebSocket</span>
+    </footer>
+
+    <script src="/static/app.js"></script>
+</body>
+</html>
