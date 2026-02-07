@@ -210,6 +210,41 @@
                 </div>
             </div>
 
+            <!-- Launch Form -->
+            <div class="card launch-form" id="launch-form-card">
+                <h2>Launch Team Session</h2>
+                <div class="launch-form-row">
+                    <div class="launch-form-field">
+                        <label for="launch-team-select">Team Template</label>
+                        <select id="launch-team-select" class="input-field">
+                            <option value="">Loading templates...</option>
+                        </select>
+                    </div>
+                    <div class="launch-form-field">
+                        <label for="launch-repo-path">Repository Path (optional)</label>
+                        <input type="text" id="launch-repo-path" class="input-field" placeholder="Default: project root">
+                    </div>
+                </div>
+                <div class="launch-form-field" style="margin-top: 0.75rem;">
+                    <label for="launch-task">Task Description</label>
+                    <textarea id="launch-task" class="input-field" rows="3" placeholder="Describe the task for the team..."></textarea>
+                </div>
+                <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                    <button class="btn btn-success" id="btn-launch-team">Launch</button>
+                    <span id="launch-status" class="muted"></span>
+                </div>
+            </div>
+
+            <!-- Live Progress Terminal -->
+            <div class="card hidden" id="progress-terminal-card">
+                <div class="logs-header">
+                    <h2>Live Progress — <span id="progress-session-id"></span></h2>
+                    <button class="btn btn-danger btn-sm" id="btn-cancel-session">Cancel</button>
+                </div>
+                <div id="progress-terminal" class="progress-terminal"></div>
+            </div>
+
+            <!-- Sessions Table -->
             <div class="card">
                 <h2>Team Sessions</h2>
                 <div id="teams-table" class="table-wrap">
@@ -227,6 +262,18 @@
                     <div id="team-detail-body">
                         <p class="muted">Loading...</p>
                     </div>
+                </div>
+            </div>
+
+            <!-- Diff viewer modal -->
+            <div id="diff-modal" class="modal hidden">
+                <div class="modal-content card" style="max-width: 1100px;">
+                    <div class="modal-header">
+                        <h2 id="diff-modal-title">Diff Viewer</h2>
+                        <button class="btn btn-sm" id="close-diff-modal">&times;</button>
+                    </div>
+                    <div id="diff-stat" class="muted" style="margin-bottom: 0.75rem; font-size: 0.8rem;"></div>
+                    <div id="diff-viewer" class="diff-viewer"></div>
                 </div>
             </div>
         </section>

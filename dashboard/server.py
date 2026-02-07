@@ -15,8 +15,9 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
-from . import config, db
+from . import config, db, worktree
 from .orchestrator import OrchestratorControl
+from .team_launcher import TeamLauncher, get_available_teams
 from .watcher import backfill_existing_outputs, backfill_team_outputs, watch_outputs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
@@ -90,6 +91,7 @@ class ConnectionManager:
 
 manager = ConnectionManager()
 orchestrator = OrchestratorControl()
+team_launcher = TeamLauncher()
 
 
 # ── Orchestrator log callback ───────────────────────────────────────────
@@ -105,6 +107,25 @@ async def on_orchestrator_log(level: str, message: str):
     })
 
 orchestrator.set_log_callback(on_orchestrator_log)
+
+
+# ── Team launcher callbacks ────────────────────────────────────────────
+
+async def on_team_progress(data: dict):
+    await manager.broadcast_teams(data)
+
+async def on_team_log(level: str, message: str):
+    ts = datetime.now(timezone.utc).isoformat()
+    await db.insert_log(ts, level, message, source="team-launcher")
+    await manager.broadcast_log({
+        "timestamp": ts,
+        "level": level,
+        "message": message,
+        "source": "team-launcher",
+    })
+
+team_launcher.set_progress_callback(on_team_progress)
+team_launcher.set_log_callback(on_team_log)
 
 
 # ── New execution callback ──────────────────────────────────────────────
@@ -172,6 +193,7 @@ async def lifespan(app: FastAPI):
         await watcher_task
     except asyncio.CancelledError:
         pass
+    await team_launcher.cancel_all()
     if orchestrator.running:
         await orchestrator.stop()
     await db.close_db()
@@ -273,6 +295,74 @@ async def api_team_detail(session_id: int):
 async def api_team_tasks(session_id: int):
     tasks = await db.get_team_tasks(session_id)
     return tasks
+
+
+# ── Team launcher endpoints ───────────────────────────────────────────
+
+@app.get("/api/teams/templates")
+async def api_team_templates():
+    return get_available_teams()
+
+
+@app.post("/api/teams/launch")
+async def api_team_launch(request: Request):
+    body = await request.json()
+    team_name = body.get("team_name")
+    task_description = body.get("task_description")
+    repo_path = body.get("repo_path") or None
+
+    if not team_name or not task_description:
+        return {"error": "team_name and task_description are required"}
+
+    result = await team_launcher.launch(team_name, task_description, repo_path)
+    return result
+
+
+@app.get("/api/teams/{session_id}/diff")
+async def api_team_diff(session_id: str):
+    session = await db.get_team_session_by_session_id(session_id)
+    if not session:
+        return {"error": "Session not found"}
+    repo_path = session.get("repo_path") or str(config.BASE_DIR)
+    result = await worktree.get_worktree_diff(repo_path, session_id)
+    stat = await worktree.get_worktree_stat(repo_path, session_id)
+    if "error" not in stat:
+        result["stat"] = stat.get("stat", "")
+    return result
+
+
+@app.post("/api/teams/{session_id}/merge")
+async def api_team_merge(session_id: str):
+    session = await db.get_team_session_by_session_id(session_id)
+    if not session:
+        return {"error": "Session not found"}
+    repo_path = session.get("repo_path") or str(config.BASE_DIR)
+    result = await worktree.merge_worktree(repo_path, session_id)
+    if "error" not in result:
+        await db.update_team_session_status(
+            session_id, "merged", datetime.now(timezone.utc).isoformat()
+        )
+    return result
+
+
+@app.post("/api/teams/{session_id}/discard")
+async def api_team_discard(session_id: str):
+    session = await db.get_team_session_by_session_id(session_id)
+    if not session:
+        return {"error": "Session not found"}
+    repo_path = session.get("repo_path") or str(config.BASE_DIR)
+    result = await worktree.delete_worktree(repo_path, session_id)
+    if "error" not in result:
+        await db.update_team_session_status(
+            session_id, "discarded", datetime.now(timezone.utc).isoformat()
+        )
+    return result
+
+
+@app.post("/api/teams/{session_id}/cancel")
+async def api_team_cancel(session_id: str):
+    result = await team_launcher.cancel(session_id)
+    return result
 
 
 # ── Control endpoints ──────────────────────────────────────────────────

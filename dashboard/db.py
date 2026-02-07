@@ -100,6 +100,18 @@ async def init_db() -> None:
     )
     await db.commit()
 
+    # Idempotent schema migration: add worktree columns to team_sessions
+    for col, coldef in [
+        ("repo_path", "TEXT"),
+        ("branch_name", "TEXT"),
+        ("worktree_path", "TEXT"),
+    ]:
+        try:
+            await db.execute(f"ALTER TABLE team_sessions ADD COLUMN {col} {coldef}")
+            await db.commit()
+        except Exception:
+            pass  # Column already exists
+
 
 # ── Execution CRUD ──────────────────────────────────────────────────────
 
@@ -389,6 +401,59 @@ async def get_team_session_count() -> int:
     cursor = await db.execute("SELECT COUNT(*) FROM team_sessions")
     row = await cursor.fetchone()
     return row[0]
+
+
+async def get_team_session_by_session_id(session_id: str) -> dict | None:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM team_sessions WHERE session_id = ?", (session_id,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def update_team_session_worktree(
+    session_id: str,
+    repo_path: str,
+    branch_name: str,
+    worktree_path: str,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE team_sessions
+           SET repo_path = ?, branch_name = ?, worktree_path = ?
+           WHERE session_id = ?""",
+        (repo_path, branch_name, worktree_path, session_id),
+    )
+    await db.commit()
+
+
+async def update_team_session_status(
+    session_id: str,
+    status: str,
+    completed_at: str | None = None,
+) -> None:
+    db = await get_db()
+    if completed_at:
+        await db.execute(
+            "UPDATE team_sessions SET status = ?, completed_at = ? WHERE session_id = ?",
+            (status, completed_at, session_id),
+        )
+    else:
+        await db.execute(
+            "UPDATE team_sessions SET status = ? WHERE session_id = ?",
+            (status, session_id),
+        )
+    await db.commit()
+
+
+async def update_team_session_filename(session_id: str, filename: str) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE team_sessions SET filename = ? WHERE session_id = ?",
+        (filename, session_id),
+    )
+    await db.commit()
 
 
 # ── Logs ────────────────────────────────────────────────────────────────
