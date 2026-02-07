@@ -3,53 +3,74 @@
 orchestra:
   # Name of your orchestration system
   name: "Agent Orchestra"
-  
+
   # Version
   version: "1.0.0"
-  
+
   # Default mode when not specified
   default_mode: "auto"
-  
+
   # Scheduling configuration
   schedule:
     # How often to run (in pipeline, this is controlled by cron)
     interval_hours: 1
-    
+
     # Retry configuration
     max_retries: 3
     retry_delay_seconds: 60
 
-# Client mode: "claude-code" (free, uses claude CLI) or "api" (paid, uses Anthropic HTTP API)
+# Client mode: "claude-code" (free), "api" (paid), or "hybrid" (API with CLI fallback)
 # Can be overridden by CLIENT_MODE env var
 client:
-  default_mode: "claude-code"
+  default_mode: "hybrid"
 
 # Agent configurations
+# Each agent can override the global client mode and define a system prompt.
 agents:
   monitor:
     enabled: true
     timeout_seconds: 120
-    
+    # Use free CLI for simple monitoring tasks
+    client_mode: "claude-code"
+    system_prompt: >
+      You are a system health monitor. Check the current state of the
+      system and report any anomalies, warnings, or failures concisely.
+
   analyzer:
     enabled: true
     timeout_seconds: 180
-    
+    # Use API for analysis tasks that benefit from system prompts
+    client_mode: "api"
+    system_prompt: >
+      You are a data analyst specializing in system performance.
+      Identify patterns, bottlenecks, and actionable improvements.
+      Be quantitative when possible.
+
   researcher:
     enabled: true
     timeout_seconds: 300
-    
+    # Hybrid: try API first, fall back to CLI
+    client_mode: "hybrid"
+    system_prompt: >
+      You are a research assistant focused on AI and multi-agent systems.
+      Provide well-structured summaries with key takeaways.
+
   reporter:
     enabled: true
     timeout_seconds: 120
+    # Inherit global mode (no override)
+    system_prompt: >
+      You are a technical report writer. Synthesize information from
+      multiple sources into clear, actionable reports.
 
 # Output configuration
 outputs:
   # Where to save results
   directory: "outputs"
-  
+
   # Retention period in days
   retention_days: 30
-  
+
   # File formats
   formats:
     - json
@@ -58,10 +79,10 @@ outputs:
 # DigitalOcean configuration
 digitalocean:
   region: "nyc3"
-  
+
   # Container registry
   registry: "agent-orchestra"
-  
+
   # App platform settings (if using)
   app:
     instance_size: "basic-xxs"
@@ -71,17 +92,17 @@ digitalocean:
 notifications:
   # Enable/disable notifications
   enabled: false
-  
+
   # Notification channels
   channels:
     slack:
       enabled: false
       webhook_url: ""
-    
+
     email:
       enabled: false
       recipients: []
-    
+
     discord:
       enabled: false
       webhook_url: ""
@@ -90,7 +111,7 @@ notifications:
 logging:
   level: "INFO"
   format: "json"
-  
+
 # Feature flags
 features:
   parallel_execution: false

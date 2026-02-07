@@ -32,11 +32,17 @@ FROM debian:bookworm-slim
 
 WORKDIR /app
 
-# Install runtime dependencies
+# Install runtime dependencies + Node.js (for claude CLI in hybrid/claude-code mode)
 RUN apt-get update && apt-get install -y \
     ca-certificates \
     libssl3 \
+    curl \
+    && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
+    && apt-get install -y nodejs \
     && rm -rf /var/lib/apt/lists/*
+
+# Install claude CLI globally (used by claude-code and hybrid modes)
+RUN npm install -g @anthropic-ai/claude-code 2>/dev/null || true
 
 # Copy the binary from builder
 COPY --from=builder /app/target/release/agent-orchestra /app/agent-orchestra
@@ -49,6 +55,8 @@ RUN mkdir -p outputs
 
 # Set environment
 ENV RUST_LOG=info
+# Default to hybrid mode; override with CLIENT_MODE env var
+ENV CLIENT_MODE=hybrid
 
 # Run the application
 CMD ["/app/agent-orchestra"]

@@ -3,16 +3,18 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fmt;
+use tracing::{info, warn};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const MODEL: &str = "claude-sonnet-4-20250514";
+const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
 
-/// The two supported client modes.
+/// The supported client modes.
 #[derive(Debug, Clone, PartialEq)]
 pub enum ClientMode {
     Api,
     ClaudeCode,
+    Hybrid,
 }
 
 impl fmt::Display for ClientMode {
@@ -20,6 +22,7 @@ impl fmt::Display for ClientMode {
         match self {
             ClientMode::Api => write!(f, "api"),
             ClientMode::ClaudeCode => write!(f, "claude-code"),
+            ClientMode::Hybrid => write!(f, "hybrid"),
         }
     }
 }
@@ -29,8 +32,9 @@ impl ClientMode {
         match s {
             "api" => Ok(ClientMode::Api),
             "claude-code" => Ok(ClientMode::ClaudeCode),
+            "hybrid" => Ok(ClientMode::Hybrid),
             other => anyhow::bail!(
-                "Invalid CLIENT_MODE '{}'. Must be 'api' or 'claude-code'.",
+                "Invalid CLIENT_MODE '{}'. Must be 'api', 'claude-code', or 'hybrid'.",
                 other
             ),
         }
@@ -40,7 +44,8 @@ impl ClientMode {
 /// Trait for sending prompts to a Claude backend.
 #[async_trait]
 pub trait AgentClient: Send + Sync {
-    async fn send_message(&self, prompt: &str) -> Result<String>;
+    /// Send a prompt with an optional system prompt.
+    async fn send_message(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String>;
 }
 
 // ---------------------------------------------------------------------------
@@ -51,6 +56,8 @@ pub trait AgentClient: Send + Sync {
 struct MessageRequest {
     model: String,
     max_tokens: u32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    system: Option<String>,
     messages: Vec<Message>,
 }
 
@@ -82,6 +89,7 @@ struct ContentBlock {
 pub struct ApiClient {
     client: Client,
     api_key: String,
+    model: String,
 }
 
 impl ApiClient {
@@ -89,16 +97,23 @@ impl ApiClient {
         Self {
             client: Client::new(),
             api_key,
+            model: DEFAULT_MODEL.to_string(),
         }
+    }
+
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.model = model.to_string();
+        self
     }
 }
 
 #[async_trait]
 impl AgentClient for ApiClient {
-    async fn send_message(&self, prompt: &str) -> Result<String> {
+    async fn send_message(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
         let request = MessageRequest {
-            model: MODEL.to_string(),
+            model: self.model.clone(),
             max_tokens: 4096,
+            system: system_prompt.map(|s| s.to_string()),
             messages: vec![Message {
                 role: "user".to_string(),
                 content: prompt.to_string(),
@@ -155,10 +170,16 @@ impl CliClient {
 
 #[async_trait]
 impl AgentClient for CliClient {
-    async fn send_message(&self, prompt: &str) -> Result<String> {
+    async fn send_message(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        // If a system prompt is provided, prepend it as context
+        let full_prompt = match system_prompt {
+            Some(sys) => format!("[CONTEXT: {}]\n\n{}", sys, prompt),
+            None => prompt.to_string(),
+        };
+
         let output = tokio::process::Command::new(&self.cli_path)
             .arg("-p")
-            .arg(prompt)
+            .arg(&full_prompt)
             .env_remove("ANTHROPIC_API_KEY")
             .output()
             .await
@@ -167,12 +188,63 @@ impl AgentClient for CliClient {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let detail = if !stderr.is_empty() { &stderr } else { &stdout };
-            anyhow::bail!("claude CLI exited with {}: {}", output.status, detail.trim());
+            let detail = if !stderr.is_empty() {
+                &stderr
+            } else {
+                &stdout
+            };
+            anyhow::bail!(
+                "claude CLI exited with {}: {}",
+                output.status,
+                detail.trim()
+            );
         }
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
         Ok(text)
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Hybrid client — tries API first, falls back to CLI
+// ---------------------------------------------------------------------------
+
+pub struct HybridClient {
+    api: ApiClient,
+    cli: CliClient,
+}
+
+impl HybridClient {
+    pub fn new(api_key: String) -> Self {
+        Self {
+            api: ApiClient::new(api_key),
+            cli: CliClient::new(),
+        }
+    }
+
+    pub fn with_model(mut self, model: &str) -> Self {
+        self.api = self.api.with_model(model);
+        self
+    }
+}
+
+#[async_trait]
+impl AgentClient for HybridClient {
+    async fn send_message(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        // Try API first
+        match self.api.send_message(prompt, system_prompt).await {
+            Ok(response) => {
+                info!("Hybrid: API succeeded");
+                Ok(response)
+            }
+            Err(api_err) => {
+                warn!("Hybrid: API failed ({:#}), falling back to CLI", api_err);
+                self.cli
+                    .send_message(prompt, system_prompt)
+                    .await
+                    .context("Hybrid: both API and CLI failed")
+            }
+        }
     }
 }
 
@@ -183,13 +255,31 @@ impl AgentClient for CliClient {
 pub fn create_client(mode: &ClientMode, api_key: Option<String>) -> Result<Box<dyn AgentClient>> {
     match mode {
         ClientMode::Api => {
-            let key = api_key.context(
-                "ANTHROPIC_API_KEY is required when CLIENT_MODE=api",
-            )?;
+            let key =
+                api_key.context("ANTHROPIC_API_KEY is required when CLIENT_MODE=api")?;
             Ok(Box::new(ApiClient::new(key)))
         }
         ClientMode::ClaudeCode => Ok(Box::new(CliClient::new())),
+        ClientMode::Hybrid => {
+            let key =
+                api_key.context("ANTHROPIC_API_KEY is required when CLIENT_MODE=hybrid")?;
+            Ok(Box::new(HybridClient::new(key)))
+        }
     }
+}
+
+/// Create a client for a specific agent, respecting per-agent overrides.
+/// Falls back to the global mode if the agent doesn't specify one.
+pub fn create_agent_client(
+    agent_mode: Option<&str>,
+    global_mode: &ClientMode,
+    api_key: Option<String>,
+) -> Result<Box<dyn AgentClient>> {
+    let mode = match agent_mode {
+        Some(m) => ClientMode::from_str(m)?,
+        None => global_mode.clone(),
+    };
+    create_client(&mode, api_key)
 }
 
 #[cfg(test)]
@@ -200,6 +290,13 @@ mod tests {
     fn test_api_client_creation() {
         let client = ApiClient::new("test-key".to_string());
         assert_eq!(client.api_key, "test-key");
+        assert_eq!(client.model, DEFAULT_MODEL);
+    }
+
+    #[test]
+    fn test_api_client_with_model() {
+        let client = ApiClient::new("test-key".to_string()).with_model("claude-opus-4-6");
+        assert_eq!(client.model, "claude-opus-4-6");
     }
 
     #[test]
@@ -215,6 +312,10 @@ mod tests {
             ClientMode::from_str("claude-code").unwrap(),
             ClientMode::ClaudeCode
         );
+        assert_eq!(
+            ClientMode::from_str("hybrid").unwrap(),
+            ClientMode::Hybrid
+        );
         assert!(ClientMode::from_str("invalid").is_err());
     }
 
@@ -222,6 +323,7 @@ mod tests {
     fn test_client_mode_display() {
         assert_eq!(ClientMode::Api.to_string(), "api");
         assert_eq!(ClientMode::ClaudeCode.to_string(), "claude-code");
+        assert_eq!(ClientMode::Hybrid.to_string(), "hybrid");
     }
 
     #[test]
@@ -240,5 +342,39 @@ mod tests {
     fn test_create_client_claude_code() {
         let result = create_client(&ClientMode::ClaudeCode, None);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_client_hybrid_requires_key() {
+        let result = create_client(&ClientMode::Hybrid, None);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_client_hybrid_with_key() {
+        let result = create_client(&ClientMode::Hybrid, Some("sk-test".to_string()));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_agent_client_override() {
+        let result = create_agent_client(
+            Some("claude-code"),
+            &ClientMode::Api,
+            Some("sk-test".to_string()),
+        );
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_agent_client_fallback() {
+        let result = create_agent_client(None, &ClientMode::ClaudeCode, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_create_agent_client_invalid_override() {
+        let result = create_agent_client(Some("bad"), &ClientMode::Api, Some("sk".to_string()));
+        assert!(result.is_err());
     }
 }

@@ -66,6 +66,13 @@ pub struct AgentsConfig {
 pub struct AgentConfig {
     pub enabled: bool,
     pub timeout_seconds: u64,
+    /// Per-agent client mode override: "api", "claude-code", or "hybrid".
+    /// If absent, inherits the global CLIENT_MODE.
+    #[serde(default)]
+    pub client_mode: Option<String>,
+    /// System prompt that gives this agent its identity/role.
+    #[serde(default)]
+    pub system_prompt: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -143,18 +150,26 @@ impl Config {
                 monitor: AgentConfig {
                     enabled: true,
                     timeout_seconds: 120,
+                    client_mode: None,
+                    system_prompt: None,
                 },
                 analyzer: AgentConfig {
                     enabled: true,
                     timeout_seconds: 180,
+                    client_mode: None,
+                    system_prompt: None,
                 },
                 researcher: AgentConfig {
                     enabled: true,
                     timeout_seconds: 300,
+                    client_mode: None,
+                    system_prompt: None,
                 },
                 reporter: AgentConfig {
                     enabled: true,
                     timeout_seconds: 120,
+                    client_mode: None,
+                    system_prompt: None,
                 },
             },
             outputs: OutputsConfig {

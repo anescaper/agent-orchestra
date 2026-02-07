@@ -11,18 +11,20 @@ mod client;
 mod config;
 
 use agents::{AgentResult, AgentTask};
-use client::{AgentClient, ClientMode, create_client};
+use client::{create_agent_client, create_client, AgentClient, ClientMode};
 use config::Config;
 
 #[derive(Debug, Serialize, Deserialize)]
 pub struct OrchestrationResult {
     timestamp: DateTime<Utc>,
     mode: String,
+    global_client_mode: String,
     results: Vec<AgentResult>,
 }
 
 pub struct Orchestrator {
-    client: Box<dyn AgentClient>,
+    global_mode: ClientMode,
+    api_key: Option<String>,
     config: Config,
     mode: String,
     timestamp: DateTime<Utc>,
@@ -37,14 +39,16 @@ impl Orchestrator {
         // Determine client mode (default: claude-code)
         let client_mode_str =
             env::var("CLIENT_MODE").unwrap_or_else(|_| "claude-code".to_string());
-        let client_mode = ClientMode::from_str(&client_mode_str)?;
+        let global_mode = ClientMode::from_str(&client_mode_str)?;
 
-        // API key is only required for API mode
+        // API key (required for api/hybrid modes)
         let api_key = env::var("ANTHROPIC_API_KEY").ok();
 
-        let client = create_client(&client_mode, api_key)?;
+        // Validate that the global mode can be created (e.g. key present for api/hybrid)
+        let _validate = create_client(&global_mode, api_key.clone())?;
+        drop(_validate);
 
-        info!("Client mode: {}", client_mode);
+        info!("Global client mode: {}", global_mode);
 
         let mode = env::var("ORCHESTRATOR_MODE").unwrap_or_else(|_| "auto".to_string());
 
@@ -56,7 +60,8 @@ impl Orchestrator {
         let config = Config::load("config/orchestra.yml").unwrap_or_else(|_| Config::default());
 
         Ok(Self {
-            client,
+            global_mode,
+            api_key,
             config,
             mode,
             timestamp,
@@ -71,22 +76,12 @@ impl Orchestrator {
         let tasks = self.get_agent_tasks();
         info!("Running {} agents", tasks.len());
 
-        let mut results = Vec::new();
-
-        // Run agents sequentially
-        for task in tasks {
-            let agent_name = task.name.clone();
-            match self.run_agent(task).await {
-                Ok(result) => results.push(result),
-                Err(e) => {
-                    error!("Agent execution failed: {:?}", e);
-                    results.push(AgentResult::failed(agent_name, format!("{:?}", e)));
-                }
-            }
-
-            // Small delay between agents
-            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
-        }
+        let results = if self.config.features.parallel_execution {
+            info!("Parallel execution enabled");
+            self.run_parallel(tasks).await
+        } else {
+            self.run_sequential(tasks).await
+        };
 
         self.save_results(&results)?;
         self.generate_summary(&results)?;
@@ -95,33 +90,161 @@ impl Orchestrator {
         Ok(())
     }
 
-    async fn run_agent(&self, task: AgentTask) -> Result<AgentResult> {
-        info!("Running agent: {}", task.name);
+    /// Run agents one at a time (original behaviour).
+    async fn run_sequential(&self, tasks: Vec<AgentTask>) -> Vec<AgentResult> {
+        let mut results = Vec::new();
+        for task in tasks {
+            let agent_name = task.name.clone();
+            let mode_label = task
+                .client_mode
+                .as_deref()
+                .unwrap_or(&self.global_mode.to_string())
+                .to_string();
 
-        let response = self
-            .client
-            .send_message(&task.prompt)
-            .await
-            .context("Failed to send message to Claude")?;
+            match self.run_agent(task).await {
+                Ok(result) => results.push(result),
+                Err(e) => {
+                    error!("Agent execution failed: {:?}", e);
+                    results.push(AgentResult::failed(
+                        agent_name,
+                        format!("{:?}", e),
+                        mode_label,
+                    ));
+                }
+            }
+
+            // Small delay between agents
+            tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
+        }
+        results
+    }
+
+    /// Run all agents concurrently via tokio::spawn.
+    async fn run_parallel(&self, tasks: Vec<AgentTask>) -> Vec<AgentResult> {
+        let mut handles = Vec::new();
+
+        for task in tasks {
+            let agent_name = task.name.clone();
+            let mode_label = task
+                .client_mode
+                .as_deref()
+                .unwrap_or(&self.global_mode.to_string())
+                .to_string();
+            let global_mode = self.global_mode.clone();
+            let api_key = self.api_key.clone();
+
+            // Each spawned task gets its own client
+            let client: Box<dyn AgentClient> = match create_agent_client(
+                task.client_mode.as_deref(),
+                &global_mode,
+                api_key,
+            ) {
+                Ok(c) => c,
+                Err(e) => {
+                    handles.push(tokio::spawn(async move {
+                        AgentResult::failed(agent_name, format!("{:?}", e), mode_label)
+                    }));
+                    continue;
+                }
+            };
+
+            let timeout_secs = task.timeout_seconds;
+            let prompt = task.prompt.clone();
+            let system_prompt = task.system_prompt.clone();
+
+            handles.push(tokio::spawn(async move {
+                info!("Running agent: {} (timeout: {}s)", agent_name, timeout_secs);
+                let timeout = std::time::Duration::from_secs(timeout_secs);
+                match tokio::time::timeout(
+                    timeout,
+                    client.send_message(&prompt, system_prompt.as_deref()),
+                )
+                .await
+                {
+                    Ok(Ok(response)) => {
+                        info!("Agent {} completed", agent_name);
+                        AgentResult::success(agent_name, response, mode_label)
+                    }
+                    Ok(Err(e)) => {
+                        error!("Agent {} failed: {:?}", agent_name, e);
+                        AgentResult::failed(agent_name, format!("{:?}", e), mode_label)
+                    }
+                    Err(_) => {
+                        error!("Agent {} timed out after {}s", agent_name, timeout_secs);
+                        AgentResult::failed(
+                            agent_name,
+                            format!("Timed out after {}s", timeout_secs),
+                            mode_label,
+                        )
+                    }
+                }
+            }));
+        }
+
+        let mut results = Vec::new();
+        for handle in handles {
+            match handle.await {
+                Ok(result) => results.push(result),
+                Err(e) => error!("Task join error: {:?}", e),
+            }
+        }
+        results
+    }
+
+    async fn run_agent(&self, task: AgentTask) -> Result<AgentResult> {
+        info!(
+            "Running agent: {} (timeout: {}s)",
+            task.name, task.timeout_seconds
+        );
+
+        let mode_label = task
+            .client_mode
+            .as_deref()
+            .unwrap_or(&self.global_mode.to_string())
+            .to_string();
+
+        let client = create_agent_client(
+            task.client_mode.as_deref(),
+            &self.global_mode,
+            self.api_key.clone(),
+        )?;
+
+        let timeout = std::time::Duration::from_secs(task.timeout_seconds);
+        let response = tokio::time::timeout(
+            timeout,
+            client.send_message(&task.prompt, task.system_prompt.as_deref()),
+        )
+        .await
+        .context(format!(
+            "Agent {} timed out after {}s",
+            task.name, task.timeout_seconds
+        ))?
+        .context("Failed to send message to Claude")?;
 
         info!("Agent {} completed", task.name);
 
-        Ok(AgentResult::success(task.name, response))
+        Ok(AgentResult::success(task.name, response, mode_label))
     }
 
     fn get_agent_tasks(&self) -> Vec<AgentTask> {
         let agents = &self.config.agents;
 
-        let filter = |name: &str, task: AgentTask| -> Option<AgentTask> {
-            let enabled = match name {
-                "monitor" | "health_checker" => agents.monitor.enabled,
-                "analyzer" | "data_analyst" | "synthesizer" => agents.analyzer.enabled,
-                "researcher" => agents.researcher.enabled,
-                "reporter" | "alert_manager" => agents.reporter.enabled,
-                _ => true,
+        let filter = |name: &str, prompt: &str| -> Option<AgentTask> {
+            let agent_config = match name {
+                "monitor" | "health_checker" => &agents.monitor,
+                "analyzer" | "data_analyst" | "synthesizer" => &agents.analyzer,
+                "researcher" => &agents.researcher,
+                "reporter" | "alert_manager" => &agents.reporter,
+                _ => {
+                    return Some(AgentTask::new(name, prompt, 120));
+                }
             };
-            if enabled {
-                Some(task)
+            if agent_config.enabled {
+                Some(
+                    AgentTask::new(name, prompt, agent_config.timeout_seconds)
+                        .with_client_mode(agent_config.client_mode.clone())
+                        .with_system_prompt(agent_config.system_prompt.clone()),
+                )
             } else {
                 warn!("Skipping disabled agent: {}", name);
                 None
@@ -130,59 +253,62 @@ impl Orchestrator {
 
         let tasks: Vec<AgentTask> = match self.mode.as_str() {
             "auto" => vec![
-                filter("monitor", AgentTask::new(
+                filter(
                     "monitor",
-                    "Check system health, review logs, and identify any issues that need attention. Provide a brief status report."
-                )),
-                filter("analyzer", AgentTask::new(
+                    "Check system health, review logs, and identify any issues that need attention. Provide a brief status report.",
+                ),
+                filter(
                     "analyzer",
-                    "Analyze recent activity patterns and suggest optimizations or improvements for the system."
-                )),
+                    "Analyze recent activity patterns and suggest optimizations or improvements for the system.",
+                ),
             ],
             "research" => vec![
-                filter("researcher", AgentTask::new(
+                filter(
                     "researcher",
-                    "Research the latest developments in AI agent orchestration and multi-agent systems. Summarize key findings."
-                )),
-                filter("synthesizer", AgentTask::new(
+                    "Research the latest developments in AI agent orchestration and multi-agent systems. Summarize key findings.",
+                ),
+                filter(
                     "synthesizer",
-                    "Based on current trends, suggest improvements to our agent orchestration framework."
-                )),
+                    "Based on current trends, suggest improvements to our agent orchestration framework.",
+                ),
             ],
             "analysis" => vec![
-                filter("data_analyst", AgentTask::new(
+                filter(
                     "data_analyst",
-                    "Analyze system performance metrics and identify bottlenecks or areas for improvement."
-                )),
-                filter("reporter", AgentTask::new(
+                    "Analyze system performance metrics and identify bottlenecks or areas for improvement.",
+                ),
+                filter(
                     "reporter",
-                    "Generate a comprehensive report on system status and recommendations."
-                )),
+                    "Generate a comprehensive report on system status and recommendations.",
+                ),
             ],
             "monitoring" => vec![
-                filter("health_checker", AgentTask::new(
+                filter(
                     "health_checker",
-                    "Perform comprehensive health checks on all system components and services."
-                )),
-                filter("alert_manager", AgentTask::new(
+                    "Perform comprehensive health checks on all system components and services.",
+                ),
+                filter(
                     "alert_manager",
-                    "Review recent alerts and events, prioritize issues, and suggest actions."
-                )),
+                    "Review recent alerts and events, prioritize issues, and suggest actions.",
+                ),
             ],
             _ => {
                 warn!("Unknown mode '{}', using 'auto'", self.mode);
                 vec![
-                    filter("monitor", AgentTask::new(
+                    filter(
                         "monitor",
                         "Check system health, review logs, and identify any issues that need attention. Provide a brief status report.",
-                    )),
-                    filter("analyzer", AgentTask::new(
+                    ),
+                    filter(
                         "analyzer",
                         "Analyze recent activity patterns and suggest optimizations or improvements for the system.",
-                    )),
+                    ),
                 ]
             }
-        }.into_iter().flatten().collect();
+        }
+        .into_iter()
+        .flatten()
+        .collect();
 
         if tasks.is_empty() {
             warn!("All agents disabled for mode '{}'", self.mode);
@@ -199,6 +325,7 @@ impl Orchestrator {
         let orchestration = OrchestrationResult {
             timestamp: self.timestamp,
             mode: self.mode.clone(),
+            global_client_mode: self.global_mode.to_string(),
             results: results.to_vec(),
         };
 
@@ -225,6 +352,11 @@ impl Orchestrator {
         summary.push_str("==================================================\n\n");
         summary.push_str(&format!("Timestamp: {}\n", timestamp_str));
         summary.push_str(&format!("Mode: {}\n", self.mode));
+        summary.push_str(&format!("Global Client: {}\n", self.global_mode));
+        summary.push_str(&format!(
+            "Parallel: {}\n",
+            self.config.features.parallel_execution
+        ));
         summary.push_str(&format!("Total Agents: {}\n", results.len()));
         summary.push_str(&format!("Successful: {}\n", successful));
         summary.push_str(&format!("Failed: {}\n\n", failed));
@@ -233,6 +365,7 @@ impl Orchestrator {
             summary.push_str("\n──────────────────────────────────────────────────\n");
             summary.push_str(&format!("Agent: {}\n", result.agent));
             summary.push_str(&format!("Status: {}\n", result.status));
+            summary.push_str(&format!("Client: {}\n", result.client_mode));
 
             if result.status == "success" {
                 if let Some(ref output) = result.output {
