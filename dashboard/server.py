@@ -17,7 +17,7 @@ from starlette.requests import Request
 
 from . import config, db
 from .orchestrator import OrchestratorControl
-from .watcher import backfill_existing_outputs, watch_outputs
+from .watcher import backfill_existing_outputs, backfill_team_outputs, watch_outputs
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(name)s %(levelname)s %(message)s")
 log = logging.getLogger("dashboard.server")
@@ -31,6 +31,7 @@ class ConnectionManager:
     def __init__(self):
         self._status_connections: list[WebSocket] = []
         self._log_connections: list[WebSocket] = []
+        self._teams_connections: list[WebSocket] = []
 
     async def connect_status(self, ws: WebSocket):
         await ws.accept()
@@ -40,6 +41,10 @@ class ConnectionManager:
         await ws.accept()
         self._log_connections.append(ws)
 
+    async def connect_teams(self, ws: WebSocket):
+        await ws.accept()
+        self._teams_connections.append(ws)
+
     def disconnect_status(self, ws: WebSocket):
         if ws in self._status_connections:
             self._status_connections.remove(ws)
@@ -47,6 +52,10 @@ class ConnectionManager:
     def disconnect_logs(self, ws: WebSocket):
         if ws in self._log_connections:
             self._log_connections.remove(ws)
+
+    def disconnect_teams(self, ws: WebSocket):
+        if ws in self._teams_connections:
+            self._teams_connections.remove(ws)
 
     async def broadcast_status(self, data: dict):
         dead = []
@@ -67,6 +76,16 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self.disconnect_logs(ws)
+
+    async def broadcast_teams(self, data: dict):
+        dead = []
+        for ws in self._teams_connections:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect_teams(ws)
 
 
 manager = ConnectionManager()
@@ -104,6 +123,22 @@ async def on_new_execution(execution_id: int):
         })
 
 
+# ── New team session callback ─────────────────────────────────────────
+
+async def on_new_team_session(session_db_id: int):
+    session = await db.get_team_session(session_db_id)
+    if session:
+        await manager.broadcast_teams({"type": "new_team_session", "data": session})
+        ts = datetime.now(timezone.utc).isoformat()
+        await db.insert_log(ts, "info", f"New team session #{session_db_id} ingested", source="watcher")
+        await manager.broadcast_log({
+            "timestamp": ts,
+            "level": "info",
+            "message": f"New team session #{session_db_id} ingested",
+            "source": "watcher",
+        })
+
+
 # ── Lifespan ────────────────────────────────────────────────────────────
 
 @asynccontextmanager
@@ -111,13 +146,23 @@ async def lifespan(app: FastAPI):
     # Startup
     await db.init_db()
     count = await backfill_existing_outputs()
-    log.info("Database initialized, backfilled %d files", count)
+    team_count = await backfill_team_outputs()
+    log.info("Database initialized, backfilled %d files + %d team files", count, team_count)
 
     # Start file watcher in background
-    watcher_task = asyncio.create_task(watch_outputs(on_new_execution=on_new_execution))
+    watcher_task = asyncio.create_task(
+        watch_outputs(
+            on_new_execution=on_new_execution,
+            on_new_team_session=on_new_team_session,
+        )
+    )
 
     ts = datetime.now(timezone.utc).isoformat()
-    await db.insert_log(ts, "info", f"Dashboard started, backfilled {count} output files", source="dashboard")
+    await db.insert_log(
+        ts, "info",
+        f"Dashboard started, backfilled {count} output files + {team_count} team files",
+        source="dashboard",
+    )
 
     yield
 
@@ -206,6 +251,30 @@ async def api_logs(limit: int = Query(100, ge=1, le=500), level: str | None = No
     return await db.get_logs(limit=limit, level=level)
 
 
+# ── Teams endpoints ───────────────────────────────────────────────────
+
+@app.get("/api/teams")
+async def api_teams(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+    sessions = await db.get_team_sessions(limit=limit, offset=offset)
+    total = await db.get_team_session_count()
+    return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/teams/{session_id}")
+async def api_team_detail(session_id: int):
+    session = await db.get_team_session(session_id)
+    if not session:
+        return {"error": "Not found"}, 404
+    tasks = await db.get_team_tasks(session_id)
+    return {**session, "tasks": tasks}
+
+
+@app.get("/api/teams/{session_id}/tasks")
+async def api_team_tasks(session_id: int):
+    tasks = await db.get_team_tasks(session_id)
+    return tasks
+
+
 # ── Control endpoints ──────────────────────────────────────────────────
 
 @app.post("/api/orchestrator/start")
@@ -241,6 +310,16 @@ async def ws_logs(ws: WebSocket):
             await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect_logs(ws)
+
+
+@app.websocket("/ws/teams")
+async def ws_teams(ws: WebSocket):
+    await manager.connect_teams(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_teams(ws)
 
 
 # ── Entry point ─────────────────────────────────────────────────────────

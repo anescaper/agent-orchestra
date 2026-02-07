@@ -292,6 +292,18 @@ impl Orchestrator {
                     "Review recent alerts and events, prioritize issues, and suggest actions.",
                 ),
             ],
+            // Agent Teams modes: use team definitions from config
+            mode if self.config.teams.enabled && self.config.teams.definitions.contains_key(mode) => {
+                let team_def = &self.config.teams.definitions[mode];
+                info!("Using Agent Teams definition: {} ({})", mode, team_def.description);
+                team_def.teammates.iter().map(|teammate| {
+                    Some(
+                        AgentTask::new(&teammate.name, &teammate.role, teammate.timeout_seconds)
+                            .with_client_mode(Some("agent-teams".to_string()))
+                            .with_system_prompt(Some(teammate.role.clone())),
+                    )
+                }).collect()
+            }
             _ => {
                 warn!("Unknown mode '{}', using 'auto'", self.mode);
                 vec![
@@ -318,9 +330,16 @@ impl Orchestrator {
 
     fn save_results(&self, results: &[AgentResult]) -> Result<()> {
         let timestamp_str = self.timestamp.format("%Y%m%d-%H%M%S").to_string();
+        let is_team_mode = self.config.teams.enabled
+            && self.config.teams.definitions.contains_key(&self.mode);
+        let prefix = if is_team_mode {
+            &self.config.teams.output_prefix
+        } else {
+            "results"
+        };
         let output_file = self
             .output_dir
-            .join(format!("results-{}.json", timestamp_str));
+            .join(format!("{}-{}.json", prefix, timestamp_str));
 
         let orchestration = OrchestrationResult {
             timestamp: self.timestamp,

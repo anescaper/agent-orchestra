@@ -76,6 +76,7 @@
             case "logs": loadLogs(); break;
             case "control": loadControl(); break;
             case "costs": loadCosts(); break;
+            case "teams": loadTeams(); break;
         }
     }
 
@@ -391,6 +392,108 @@
         }
     }
 
+    // ── Teams Panel ─────────────────────────────────────────────────────
+
+    async function loadTeams() {
+        const data = await api("/api/teams?limit=50");
+        const sessions = data.sessions || [];
+        const total = data.total || 0;
+
+        $("#teams-total").textContent = total;
+
+        // Count active (running) sessions
+        const active = sessions.filter(s => s.status === "running").length;
+        $("#teams-active").textContent = active;
+
+        if (sessions.length === 0) {
+            $("#teams-table").innerHTML = '<p class="muted">No team sessions yet. Launch one with ./scripts/launch-team.sh</p>';
+            return;
+        }
+
+        let html = `<table>
+            <thead><tr><th>#</th><th>Team</th><th>Status</th><th>Teammates</th><th>Success</th><th>Failed</th><th>Started</th></tr></thead>
+            <tbody>`;
+        for (const s of sessions) {
+            const statusCls = s.status === "completed" ? "badge-success"
+                : s.status === "running" ? "badge-info"
+                : s.status === "partial" ? "badge-warning"
+                : "badge-gray";
+            html += `<tr class="clickable" data-team-id="${s.id}">
+                <td>${s.id}</td>
+                <td><strong>${s.team_name}</strong></td>
+                <td><span class="badge ${statusCls}">${s.status}</span></td>
+                <td>${s.teammate_count}</td>
+                <td class="text-success">${s.success_count}</td>
+                <td class="${s.fail_count > 0 ? 'text-danger' : ''}">${s.fail_count}</td>
+                <td>${formatTime(s.started_at)}</td>
+            </tr>`;
+        }
+        html += "</tbody></table>";
+        $("#teams-table").innerHTML = html;
+
+        // Click handlers for detail
+        $$("#teams-table tr.clickable").forEach(row => {
+            row.addEventListener("click", () => showTeamDetail(row.dataset.teamId));
+        });
+    }
+
+    async function showTeamDetail(id) {
+        const modal = $("#team-detail-modal");
+        modal.classList.remove("hidden");
+        $("#team-detail-body").innerHTML = '<p class="muted">Loading...</p>';
+
+        const data = await api(`/api/teams/${id}`);
+        if (data.error) {
+            $("#team-detail-body").innerHTML = `<p class="text-danger">${data.error}</p>`;
+            return;
+        }
+
+        const statusCls = data.status === "completed" ? "badge-success"
+            : data.status === "running" ? "badge-info"
+            : data.status === "partial" ? "badge-warning"
+            : "badge-gray";
+
+        let html = `<p>Team: <strong>${data.team_name}</strong>
+            <span class="badge ${statusCls}">${data.status}</span></p>
+            <p class="muted">Started: ${formatTime(data.started_at)}${data.completed_at ? ' | Completed: ' + formatTime(data.completed_at) : ''}</p>`;
+
+        if (data.task_description) {
+            html += `<p style="margin-top: 0.5rem;">Task: ${escapeHtml(data.task_description)}</p>`;
+        }
+
+        html += `<hr style="border-color: var(--border); margin: 1rem 0;">`;
+
+        const tasks = data.tasks || [];
+        for (const t of tasks) {
+            html += `<div style="margin-bottom: 1rem;">
+                <p><strong>${t.teammate}</strong> ${statusBadge(t.status)}
+                   <span class="muted" style="margin-left: 0.5rem;">${formatTime(t.started_at)}</span></p>`;
+            if (t.role) {
+                html += `<p class="muted" style="font-size: 0.8rem; margin-top: 0.25rem;">${escapeHtml(t.role)}</p>`;
+            }
+            if (t.output) {
+                html += `<div class="agent-output">${escapeHtml(t.output)}</div>`;
+            }
+            if (t.error) {
+                html += `<p class="text-danger" style="margin-top: 0.25rem;">${escapeHtml(t.error)}</p>`;
+            }
+            html += `</div>`;
+        }
+
+        $("#team-detail-title").textContent = `Team Session #${id} — ${data.team_name}`;
+        $("#team-detail-body").innerHTML = html;
+    }
+
+    $("#close-team-modal").addEventListener("click", () => {
+        $("#team-detail-modal").classList.add("hidden");
+    });
+
+    $("#team-detail-modal").addEventListener("click", (e) => {
+        if (e.target === $("#team-detail-modal")) {
+            $("#team-detail-modal").classList.add("hidden");
+        }
+    });
+
     // ── WebSocket ───────────────────────────────────────────────────────
 
     function connectWebSockets() {
@@ -428,6 +531,20 @@
             try {
                 const entry = JSON.parse(e.data);
                 appendLogEntry(entry);
+            } catch {}
+        };
+
+        // Teams WebSocket
+        const wsTeams = new WebSocket(`${base}/ws/teams`);
+        wsTeams.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                if (data.type === "new_team_session") {
+                    const activePanel = document.querySelector(".panel.active");
+                    if (activePanel && activePanel.id === "panel-teams") {
+                        loadTeams();
+                    }
+                }
             } catch {}
         };
     }

@@ -98,11 +98,79 @@ async def backfill_existing_outputs() -> int:
     return count
 
 
-async def watch_outputs(on_new_execution=None) -> None:
+async def ingest_team_result_file(filepath: Path) -> int | None:
+    """Parse a teams-*.json file and insert into DB. Returns session db id or None."""
+    filename = filepath.name
+
+    # Derive a session_id from filename
+    session_id = filename.replace(".json", "")
+
+    if await db.team_session_exists(session_id):
+        return None
+
+    try:
+        raw = filepath.read_text()
+        data = json.loads(raw)
+    except (json.JSONDecodeError, OSError) as e:
+        log.warning("Failed to parse team file %s: %s", filename, e)
+        return None
+
+    results = data.get("results", [])
+    success_count = sum(1 for r in results if r.get("status") == "success")
+    fail_count = sum(1 for r in results if r.get("status") == "failed")
+
+    db_id = await db.insert_team_session(
+        session_id=session_id,
+        team_name=data.get("mode", "unknown"),
+        task_description=None,
+        status="completed" if fail_count == 0 else "partial",
+        started_at=data.get("timestamp", datetime.now(timezone.utc).isoformat()),
+        completed_at=datetime.now(timezone.utc).isoformat(),
+        filename=filename,
+        teammate_count=len(results),
+        success_count=success_count,
+        fail_count=fail_count,
+    )
+
+    for r in results:
+        await db.insert_team_task(
+            session_id=db_id,
+            teammate=r.get("agent", "unknown"),
+            role=None,
+            status=r.get("status", "unknown"),
+            output=r.get("output"),
+            error=r.get("error"),
+            started_at=r.get("timestamp"),
+            completed_at=r.get("timestamp"),
+        )
+
+    log.info("Ingested team file %s -> session #%d (%d teammates)", filename, db_id, len(results))
+    return db_id
+
+
+async def backfill_team_outputs() -> int:
+    """Scan outputs/ directory for teams-*.json files not yet in the DB."""
+    outputs_dir = config.OUTPUTS_DIR
+    if not outputs_dir.is_dir():
+        return 0
+
+    count = 0
+    for fp in sorted(outputs_dir.glob("teams-*.json")):
+        result = await ingest_team_result_file(fp)
+        if result is not None:
+            count += 1
+
+    if count:
+        log.info("Backfilled %d existing team output files", count)
+    return count
+
+
+async def watch_outputs(on_new_execution=None, on_new_team_session=None) -> None:
     """Watch the outputs/ directory for new result files.
 
     Args:
         on_new_execution: optional async callback(execution_id) for notifications
+        on_new_team_session: optional async callback(session_id) for team notifications
     """
     outputs_dir = config.OUTPUTS_DIR
     outputs_dir.mkdir(parents=True, exist_ok=True)
@@ -112,9 +180,17 @@ async def watch_outputs(on_new_execution=None) -> None:
     async for changes in awatch(str(outputs_dir)):
         for change_type, path_str in changes:
             path = Path(path_str)
-            if change_type in (Change.added, Change.modified) and path.name.startswith("results-") and path.suffix == ".json":
-                # Small delay to let file finish writing
-                await asyncio.sleep(0.5)
+            if change_type not in (Change.added, Change.modified) or path.suffix != ".json":
+                continue
+
+            # Small delay to let file finish writing
+            await asyncio.sleep(0.5)
+
+            if path.name.startswith("results-"):
                 exec_id = await ingest_result_file(path)
                 if exec_id is not None and on_new_execution:
                     await on_new_execution(exec_id)
+            elif path.name.startswith("teams-"):
+                session_id = await ingest_team_result_file(path)
+                if session_id is not None and on_new_team_session:
+                    await on_new_team_session(session_id)

@@ -18,6 +18,8 @@ pub struct Config {
     pub logging: LoggingConfig,
     #[serde(default)]
     pub features: FeaturesConfig,
+    #[serde(default)]
+    pub teams: TeamsConfig,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -130,6 +132,58 @@ pub struct FeaturesConfig {
     pub health_monitoring: bool,
 }
 
+/// Configuration for Agent Teams integration.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamsConfig {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_tasks_dir")]
+    pub tasks_dir: String,
+    #[serde(default = "default_output_prefix")]
+    pub output_prefix: String,
+    #[serde(default)]
+    pub definitions: std::collections::HashMap<String, TeamDefinition>,
+}
+
+fn default_tasks_dir() -> String {
+    "~/.claude/tasks".to_string()
+}
+
+fn default_output_prefix() -> String {
+    "teams".to_string()
+}
+
+impl Default for TeamsConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            tasks_dir: default_tasks_dir(),
+            output_prefix: default_output_prefix(),
+            definitions: std::collections::HashMap::new(),
+        }
+    }
+}
+
+/// A team definition with a description and list of teammates.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeamDefinition {
+    pub description: String,
+    pub teammates: Vec<TeammateDefinition>,
+}
+
+/// A teammate within a team definition.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TeammateDefinition {
+    pub name: String,
+    pub role: String,
+    #[serde(default = "default_teammate_timeout")]
+    pub timeout_seconds: u64,
+}
+
+fn default_teammate_timeout() -> u64 {
+    300
+}
+
 impl Config {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
@@ -184,6 +238,7 @@ impl Config {
             notifications: NotificationsConfig::default(),
             logging: LoggingConfig::default(),
             features: FeaturesConfig::default(),
+            teams: TeamsConfig::default(),
         }
     }
 }

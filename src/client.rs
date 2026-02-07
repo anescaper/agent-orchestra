@@ -3,7 +3,7 @@ use async_trait::async_trait;
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use std::fmt;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
@@ -15,6 +15,7 @@ pub enum ClientMode {
     Api,
     ClaudeCode,
     Hybrid,
+    AgentTeams,
 }
 
 impl fmt::Display for ClientMode {
@@ -23,6 +24,7 @@ impl fmt::Display for ClientMode {
             ClientMode::Api => write!(f, "api"),
             ClientMode::ClaudeCode => write!(f, "claude-code"),
             ClientMode::Hybrid => write!(f, "hybrid"),
+            ClientMode::AgentTeams => write!(f, "agent-teams"),
         }
     }
 }
@@ -33,8 +35,9 @@ impl ClientMode {
             "api" => Ok(ClientMode::Api),
             "claude-code" => Ok(ClientMode::ClaudeCode),
             "hybrid" => Ok(ClientMode::Hybrid),
+            "agent-teams" => Ok(ClientMode::AgentTeams),
             other => anyhow::bail!(
-                "Invalid CLIENT_MODE '{}'. Must be 'api', 'claude-code', or 'hybrid'.",
+                "Invalid CLIENT_MODE '{}'. Must be 'api', 'claude-code', 'hybrid', or 'agent-teams'.",
                 other
             ),
         }
@@ -249,6 +252,69 @@ impl AgentClient for HybridClient {
 }
 
 // ---------------------------------------------------------------------------
+// Agent Teams client — spawns `claude` with Agent Teams env
+// ---------------------------------------------------------------------------
+
+pub struct TeamsClient {
+    cli_path: String,
+}
+
+impl TeamsClient {
+    pub fn new() -> Self {
+        // Prefer the local `claude` on PATH, fall back to known paths
+        let cli_path = std::env::var("CLAUDE_CLI_PATH").unwrap_or_else(|_| {
+            if std::path::Path::new("/usr/local/bin/claude").exists() {
+                "/usr/local/bin/claude".to_string()
+            } else {
+                "claude".to_string()
+            }
+        });
+        Self { cli_path }
+    }
+}
+
+#[async_trait]
+impl AgentClient for TeamsClient {
+    async fn send_message(&self, prompt: &str, system_prompt: Option<&str>) -> Result<String> {
+        let full_prompt = match system_prompt {
+            Some(sys) => format!("[TEAM CONTEXT: {}]\n\n{}", sys, prompt),
+            None => prompt.to_string(),
+        };
+
+        info!("TeamsClient: launching claude with Agent Teams enabled");
+
+        let output = tokio::process::Command::new(&self.cli_path)
+            .arg("-p")
+            .arg(&full_prompt)
+            .env("CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS", "1")
+            .env_remove("ANTHROPIC_API_KEY")
+            .output()
+            .await
+            .context("Failed to execute claude CLI with Agent Teams")?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let detail = if !stderr.is_empty() {
+                &stderr
+            } else {
+                &stdout
+            };
+            error!("TeamsClient: claude exited with {}", output.status);
+            anyhow::bail!(
+                "claude CLI (agent-teams) exited with {}: {}",
+                output.status,
+                detail.trim()
+            );
+        }
+
+        let text = String::from_utf8_lossy(&output.stdout).to_string();
+        info!("TeamsClient: session completed ({} bytes output)", text.len());
+        Ok(text)
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Factory
 // ---------------------------------------------------------------------------
 
@@ -265,6 +331,7 @@ pub fn create_client(mode: &ClientMode, api_key: Option<String>) -> Result<Box<d
                 api_key.context("ANTHROPIC_API_KEY is required when CLIENT_MODE=hybrid")?;
             Ok(Box::new(HybridClient::new(key)))
         }
+        ClientMode::AgentTeams => Ok(Box::new(TeamsClient::new())),
     }
 }
 
@@ -316,6 +383,10 @@ mod tests {
             ClientMode::from_str("hybrid").unwrap(),
             ClientMode::Hybrid
         );
+        assert_eq!(
+            ClientMode::from_str("agent-teams").unwrap(),
+            ClientMode::AgentTeams
+        );
         assert!(ClientMode::from_str("invalid").is_err());
     }
 
@@ -324,6 +395,7 @@ mod tests {
         assert_eq!(ClientMode::Api.to_string(), "api");
         assert_eq!(ClientMode::ClaudeCode.to_string(), "claude-code");
         assert_eq!(ClientMode::Hybrid.to_string(), "hybrid");
+        assert_eq!(ClientMode::AgentTeams.to_string(), "agent-teams");
     }
 
     #[test]
@@ -376,5 +448,17 @@ mod tests {
     fn test_create_agent_client_invalid_override() {
         let result = create_agent_client(Some("bad"), &ClientMode::Api, Some("sk".to_string()));
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_create_client_agent_teams() {
+        let result = create_client(&ClientMode::AgentTeams, None);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_teams_client_creation() {
+        let _client = TeamsClient::new();
+        // TeamsClient doesn't require an API key
     }
 }
