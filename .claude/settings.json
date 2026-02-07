@@ -1,0 +1,26 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build*)",
+      "Bash(cargo test*)",
+      "Bash(cargo fmt*)",
+      "Bash(cargo clippy*)",
+      "Bash(cargo run*)",
+      "Bash(python3 -m dashboard*)",
+      "Bash(python3 -m pytest*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(git branch*)",
+      "Bash(git worktree*)",
+      "Bash(git add*)",
+      "Bash(git commit*)",
+      "Bash(./scripts/*)"
+    ],
+    "deny": [
+      "Bash(cat .env)",
+      "Bash(cat */.env)",
+      "Bash(echo $ANTHROPIC_API_KEY*)"
+    ]
+  }
+}
