@@ -7,6 +7,9 @@
 # Outputs
 outputs/
 
+# Worktrees
+.worktrees/
+
 # IDE
 .vscode/
 .idea/
