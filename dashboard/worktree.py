@@ -90,33 +90,48 @@ async def list_worktrees(repo_path: str) -> list[dict]:
 
 
 async def get_worktree_diff(repo_path: str, session_id: str) -> dict:
-    """Get unified diff of worktree changes vs base branch."""
+    """Get unified diff of worktree changes vs base branch.
+
+    Checks both committed branch changes AND uncommitted working tree changes.
+    """
     branch = f"{BRANCH_PREFIX}/{session_id}"
+    wt_dir = str(Path(repo_path) / WORKTREE_DIR / session_id)
 
     # Find merge base
     rc, base, err = await _run_git("merge-base", "HEAD", branch, cwd=repo_path)
     if rc != 0:
         return {"error": f"Failed to find merge base: {err}"}
 
-    # Get unified diff
-    rc, diff, err = await _run_git("diff", base, branch, cwd=repo_path)
+    # First check committed diff (branch vs base)
+    rc, committed_diff, err = await _run_git("diff", base, branch, cwd=repo_path)
     if rc != 0:
         return {"error": f"Failed to get diff: {err}"}
 
+    # Also check uncommitted changes in the worktree
+    rc, uncommitted_diff, err = await _run_git("diff", "HEAD", cwd=wt_dir)
+    if rc != 0:
+        uncommitted_diff = ""
+
+    # Combine: prefer uncommitted if present, else committed
+    diff = uncommitted_diff or committed_diff
     return {"diff": diff, "base_commit": base}
 
 
 async def get_worktree_stat(repo_path: str, session_id: str) -> dict:
     """Get --stat summary of worktree changes vs base branch."""
     branch = f"{BRANCH_PREFIX}/{session_id}"
+    wt_dir = str(Path(repo_path) / WORKTREE_DIR / session_id)
 
     rc, base, err = await _run_git("merge-base", "HEAD", branch, cwd=repo_path)
     if rc != 0:
         return {"error": f"Failed to find merge base: {err}"}
 
-    rc, stat, err = await _run_git("diff", "--stat", base, branch, cwd=repo_path)
-    if rc != 0:
-        return {"error": f"Failed to get stat: {err}"}
+    # Check uncommitted first, then committed
+    rc, stat, err = await _run_git("diff", "--stat", "HEAD", cwd=wt_dir)
+    if rc != 0 or not stat.strip():
+        rc, stat, err = await _run_git("diff", "--stat", base, branch, cwd=repo_path)
+        if rc != 0:
+            return {"error": f"Failed to get stat: {err}"}
 
     return {"stat": stat, "base_commit": base}
 
@@ -125,6 +140,10 @@ async def merge_worktree(repo_path: str, session_id: str) -> dict:
     """Merge the team branch into current branch, remove worktree, delete branch."""
     branch = f"{BRANCH_PREFIX}/{session_id}"
     wt_dir = str(Path(repo_path) / WORKTREE_DIR / session_id)
+
+    # Commit any uncommitted changes in the worktree first
+    await _run_git("add", "-A", cwd=wt_dir)
+    await _run_git("commit", "-m", f"Team session {session_id} changes", cwd=wt_dir)
 
     # Remove worktree first
     rc, out, err = await _run_git("worktree", "remove", wt_dir, "--force", cwd=repo_path)
