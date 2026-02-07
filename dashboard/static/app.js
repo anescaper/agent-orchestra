@@ -9,6 +9,9 @@
     let historyOffset = 0;
     const PAGE_SIZE = 20;
 
+    // Track current running session for progress terminal
+    let activeSessionId = null;
+
     // ── Helpers ─────────────────────────────────────────────────────────
 
     function $(sel) { return document.querySelector(sel); }
@@ -19,8 +22,13 @@
         return res.json();
     }
 
-    async function apiPost(path) {
-        const res = await fetch(API + path, { method: "POST" });
+    async function apiPost(path, body) {
+        const opts = { method: "POST" };
+        if (body) {
+            opts.headers = { "Content-Type": "application/json" };
+            opts.body = JSON.stringify(body);
+        }
+        const res = await fetch(API + path, opts);
         return res.json();
     }
 
@@ -45,7 +53,11 @@
     }
 
     function statusBadge(status) {
-        const cls = status === "success" ? "badge-success" : status === "failed" ? "badge-danger" : "badge-gray";
+        const cls = status === "success" || status === "completed" || status === "merged" ? "badge-success"
+            : status === "failed" ? "badge-danger"
+            : status === "running" ? "badge-info"
+            : status === "cancelled" || status === "discarded" ? "badge-warning"
+            : "badge-gray";
         return `<span class="badge ${cls}">${status}</span>`;
     }
 
@@ -53,6 +65,12 @@
         if (!cost || cost === 0) return "$0.00";
         if (cost < 0.01) return "$" + cost.toFixed(4);
         return "$" + cost.toFixed(2);
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement("div");
+        div.textContent = text;
+        return div.innerHTML;
     }
 
     // ── Tab Navigation ──────────────────────────────────────────────────
@@ -76,7 +94,7 @@
             case "logs": loadLogs(); break;
             case "control": loadControl(); break;
             case "costs": loadCosts(); break;
-            case "teams": loadTeams(); break;
+            case "teams": loadTeams(); loadTeamTemplates(); break;
         }
     }
 
@@ -143,7 +161,6 @@
             <thead><tr><th>Agent</th><th>Total Runs</th><th>Successes</th><th>Failures</th><th>Last Status</th><th>Last Run</th><th>Avg Output</th></tr></thead>
             <tbody>`;
         for (const a of agents) {
-            const rate = a.total_runs > 0 ? ((a.successes / a.total_runs) * 100).toFixed(0) : 0;
             html += `<tr>
                 <td><strong>${a.agent}</strong></td>
                 <td>${a.total_runs}</td>
@@ -244,12 +261,6 @@
 
         $("#exec-detail-title").textContent = `Execution #${id}`;
         $("#exec-detail-body").innerHTML = html;
-    }
-
-    function escapeHtml(text) {
-        const div = document.createElement("div");
-        div.textContent = text;
-        return div.innerHTML;
     }
 
     $("#close-modal").addEventListener("click", () => {
@@ -392,7 +403,144 @@
         }
     }
 
-    // ── Teams Panel ─────────────────────────────────────────────────────
+    // ── Teams Panel — Templates ─────────────────────────────────────────
+
+    let teamTemplatesLoaded = false;
+
+    async function loadTeamTemplates() {
+        if (teamTemplatesLoaded) return;
+        try {
+            const templates = await api("/api/teams/templates");
+            const select = $("#launch-team-select");
+            select.innerHTML = '<option value="">-- Select a team --</option>';
+            if (Array.isArray(templates)) {
+                for (const t of templates) {
+                    const opt = document.createElement("option");
+                    opt.value = t.name;
+                    opt.textContent = `${t.name} — ${t.description} (${t.teammate_count} teammates)`;
+                    select.appendChild(opt);
+                }
+            }
+            teamTemplatesLoaded = true;
+        } catch {
+            $("#launch-team-select").innerHTML = '<option value="">Failed to load templates</option>';
+        }
+    }
+
+    // ── Teams Panel — Launch ────────────────────────────────────────────
+
+    $("#btn-launch-team").addEventListener("click", async () => {
+        const teamName = $("#launch-team-select").value;
+        const taskDesc = $("#launch-task").value.trim();
+        const repoPath = $("#launch-repo-path").value.trim() || undefined;
+
+        if (!teamName) {
+            $("#launch-status").textContent = "Please select a team template.";
+            return;
+        }
+        if (!taskDesc) {
+            $("#launch-status").textContent = "Please describe the task.";
+            return;
+        }
+
+        $("#btn-launch-team").disabled = true;
+        $("#launch-status").textContent = "Launching...";
+
+        const result = await apiPost("/api/teams/launch", {
+            team_name: teamName,
+            task_description: taskDesc,
+            repo_path: repoPath,
+        });
+
+        if (result.error) {
+            $("#launch-status").textContent = "Error: " + result.error;
+            $("#btn-launch-team").disabled = false;
+            return;
+        }
+
+        // Show progress terminal
+        activeSessionId = result.session_id;
+        $("#progress-session-id").textContent = result.session_id;
+        $("#progress-terminal").innerHTML = '<div class="term-line term-info">Session started. Waiting for output...</div>';
+        $("#progress-terminal-card").classList.remove("hidden");
+        $("#btn-cancel-session").disabled = false;
+
+        $("#launch-status").textContent = "Launched! Session: " + result.session_id;
+        $("#btn-launch-team").disabled = false;
+        $("#launch-task").value = "";
+
+        // Refresh table
+        loadTeams();
+    });
+
+    // ── Teams Panel — Cancel ────────────────────────────────────────────
+
+    $("#btn-cancel-session").addEventListener("click", async () => {
+        if (!activeSessionId) return;
+        if (!confirm("Cancel running session " + activeSessionId + "?")) return;
+
+        $("#btn-cancel-session").disabled = true;
+        const result = await apiPost(`/api/teams/${activeSessionId}/cancel`);
+        if (result.error) {
+            alert("Cancel failed: " + result.error);
+            $("#btn-cancel-session").disabled = false;
+        } else {
+            appendTerminalLine("Session cancelled.", "term-warn");
+            activeSessionId = null;
+            loadTeams();
+        }
+    });
+
+    // ── Teams Panel — Progress Terminal ─────────────────────────────────
+
+    function appendTerminalLine(text, cls) {
+        const terminal = $("#progress-terminal");
+        if (!terminal) return;
+        const div = document.createElement("div");
+        div.className = "term-line " + (cls || "");
+        div.textContent = text;
+        terminal.appendChild(div);
+        terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    function handleTeamProgress(data) {
+        if (data.type !== "team_progress") return;
+
+        // Only render for the active session's terminal
+        if (data.session_id !== activeSessionId) {
+            // Still refresh table for any status changes
+            if (data.event === "completed" || data.event === "cancelled") {
+                loadTeams();
+            }
+            return;
+        }
+
+        switch (data.event) {
+            case "stdout":
+                appendTerminalLine(data.data, "term-stdout");
+                break;
+            case "stderr":
+                appendTerminalLine(data.data, "term-stderr");
+                break;
+            case "completed":
+                appendTerminalLine(
+                    `Session ${data.status} (exit code: ${data.exit_code})`,
+                    data.status === "completed" ? "term-info" : "term-stderr"
+                );
+                $("#btn-cancel-session").disabled = true;
+                activeSessionId = null;
+                loadTeams();
+                break;
+            case "cancelled":
+                appendTerminalLine("Session cancelled.", "term-warn");
+                $("#btn-cancel-session").disabled = true;
+                activeSessionId = null;
+                loadTeams();
+                break;
+        }
+    }
+
+    // ── Teams Panel — Sessions Table ────────────────────────────────────
 
     async function loadTeams() {
         const data = await api("/api/teams?limit=50");
@@ -406,36 +554,159 @@
         $("#teams-active").textContent = active;
 
         if (sessions.length === 0) {
-            $("#teams-table").innerHTML = '<p class="muted">No team sessions yet. Launch one with ./scripts/launch-team.sh</p>';
+            $("#teams-table").innerHTML = '<p class="muted">No team sessions yet. Use the form above to launch one.</p>';
             return;
         }
 
         let html = `<table>
-            <thead><tr><th>#</th><th>Team</th><th>Status</th><th>Teammates</th><th>Success</th><th>Failed</th><th>Started</th></tr></thead>
+            <thead><tr><th>#</th><th>Team</th><th>Task</th><th>Status</th><th>Started</th><th>Actions</th></tr></thead>
             <tbody>`;
         for (const s of sessions) {
-            const statusCls = s.status === "completed" ? "badge-success"
+            const statusCls = s.status === "completed" || s.status === "merged" ? "badge-success"
                 : s.status === "running" ? "badge-info"
-                : s.status === "partial" ? "badge-warning"
+                : s.status === "cancelled" || s.status === "discarded" ? "badge-warning"
+                : s.status === "failed" ? "badge-danger"
                 : "badge-gray";
+            const taskSnippet = s.task_description
+                ? escapeHtml(s.task_description.length > 60 ? s.task_description.slice(0, 60) + "..." : s.task_description)
+                : '<span class="muted">-</span>';
+
+            // Build action buttons based on status
+            let actions = '';
+            if (s.session_id) {
+                if (s.status === "completed" || s.status === "failed") {
+                    actions = `<span class="actions-cell">
+                        <button class="btn btn-sm" onclick="window._teamAction('diff','${escapeHtml(s.session_id)}')">Diff</button>
+                        <button class="btn btn-sm btn-success" onclick="window._teamAction('merge','${escapeHtml(s.session_id)}')">Merge</button>
+                        <button class="btn btn-sm btn-danger" onclick="window._teamAction('discard','${escapeHtml(s.session_id)}')">Discard</button>
+                    </span>`;
+                } else if (s.status === "running") {
+                    actions = `<span class="actions-cell">
+                        <button class="btn btn-sm btn-danger" onclick="window._teamAction('cancel','${escapeHtml(s.session_id)}')">Cancel</button>
+                    </span>`;
+                } else {
+                    actions = `<span class="muted">-</span>`;
+                }
+            }
+
             html += `<tr class="clickable" data-team-id="${s.id}">
                 <td>${s.id}</td>
-                <td><strong>${s.team_name}</strong></td>
+                <td><strong>${escapeHtml(s.team_name)}</strong></td>
+                <td>${taskSnippet}</td>
                 <td><span class="badge ${statusCls}">${s.status}</span></td>
-                <td>${s.teammate_count}</td>
-                <td class="text-success">${s.success_count}</td>
-                <td class="${s.fail_count > 0 ? 'text-danger' : ''}">${s.fail_count}</td>
                 <td>${formatTime(s.started_at)}</td>
+                <td>${actions}</td>
             </tr>`;
         }
         html += "</tbody></table>";
         $("#teams-table").innerHTML = html;
 
-        // Click handlers for detail
+        // Click handlers for detail (but not on action buttons)
         $$("#teams-table tr.clickable").forEach(row => {
-            row.addEventListener("click", () => showTeamDetail(row.dataset.teamId));
+            row.addEventListener("click", (e) => {
+                if (e.target.closest(".actions-cell")) return;
+                showTeamDetail(row.dataset.teamId);
+            });
         });
     }
+
+    // Expose action handler globally for inline onclick
+    window._teamAction = function (action, sessionId) {
+        switch (action) {
+            case "diff": showDiff(sessionId); break;
+            case "merge": mergeTeam(sessionId); break;
+            case "discard": discardTeam(sessionId); break;
+            case "cancel": cancelTeam(sessionId); break;
+        }
+    };
+
+    // ── Teams Panel — Diff Viewer ───────────────────────────────────────
+
+    async function showDiff(sessionId) {
+        const modal = $("#diff-modal");
+        modal.classList.remove("hidden");
+        $("#diff-viewer").innerHTML = '<p class="muted">Loading diff...</p>';
+        $("#diff-stat").textContent = "";
+        $("#diff-modal-title").textContent = "Diff — " + sessionId;
+
+        const data = await api(`/api/teams/${sessionId}/diff`);
+        if (data.error) {
+            $("#diff-viewer").innerHTML = `<p class="text-danger">${escapeHtml(data.error)}</p>`;
+            return;
+        }
+
+        if (data.stat) {
+            $("#diff-stat").textContent = data.stat;
+        }
+
+        const diff = data.diff || "";
+        if (!diff.trim()) {
+            $("#diff-viewer").innerHTML = '<p class="muted">No changes detected.</p>';
+            return;
+        }
+
+        // Render diff with color coding
+        const lines = diff.split("\n");
+        let html = "";
+        for (const line of lines) {
+            if (line.startsWith("+++") || line.startsWith("---")) {
+                html += `<div class="diff-line diff-meta">${escapeHtml(line)}</div>`;
+            } else if (line.startsWith("@@")) {
+                html += `<div class="diff-line diff-hunk">${escapeHtml(line)}</div>`;
+            } else if (line.startsWith("+")) {
+                html += `<div class="diff-line diff-add">${escapeHtml(line)}</div>`;
+            } else if (line.startsWith("-")) {
+                html += `<div class="diff-line diff-del">${escapeHtml(line)}</div>`;
+            } else {
+                html += `<div class="diff-line">${escapeHtml(line)}</div>`;
+            }
+        }
+        $("#diff-viewer").innerHTML = html;
+    }
+
+    $("#close-diff-modal").addEventListener("click", () => {
+        $("#diff-modal").classList.add("hidden");
+    });
+
+    $("#diff-modal").addEventListener("click", (e) => {
+        if (e.target === $("#diff-modal")) {
+            $("#diff-modal").classList.add("hidden");
+        }
+    });
+
+    // ── Teams Panel — Merge / Discard / Cancel ──────────────────────────
+
+    async function mergeTeam(sessionId) {
+        if (!confirm("Merge branch for session " + sessionId + " into main?")) return;
+        const result = await apiPost(`/api/teams/${sessionId}/merge`);
+        if (result.error) {
+            alert("Merge failed: " + result.error);
+        } else {
+            loadTeams();
+        }
+    }
+
+    async function discardTeam(sessionId) {
+        if (!confirm("Discard worktree for session " + sessionId + "? This cannot be undone.")) return;
+        const result = await apiPost(`/api/teams/${sessionId}/discard`);
+        if (result.error) {
+            alert("Discard failed: " + result.error);
+        } else {
+            loadTeams();
+        }
+    }
+
+    async function cancelTeam(sessionId) {
+        if (!confirm("Cancel running session " + sessionId + "?")) return;
+        const result = await apiPost(`/api/teams/${sessionId}/cancel`);
+        if (result.error) {
+            alert("Cancel failed: " + result.error);
+        } else {
+            loadTeams();
+        }
+    }
+
+    // ── Teams Panel — Detail Modal ──────────────────────────────────────
 
     async function showTeamDetail(id) {
         const modal = $("#team-detail-modal");
@@ -448,12 +719,13 @@
             return;
         }
 
-        const statusCls = data.status === "completed" ? "badge-success"
+        const statusCls = data.status === "completed" || data.status === "merged" ? "badge-success"
             : data.status === "running" ? "badge-info"
-            : data.status === "partial" ? "badge-warning"
+            : data.status === "cancelled" || data.status === "discarded" ? "badge-warning"
+            : data.status === "failed" ? "badge-danger"
             : "badge-gray";
 
-        let html = `<p>Team: <strong>${data.team_name}</strong>
+        let html = `<p>Team: <strong>${escapeHtml(data.team_name)}</strong>
             <span class="badge ${statusCls}">${data.status}</span></p>
             <p class="muted">Started: ${formatTime(data.started_at)}${data.completed_at ? ' | Completed: ' + formatTime(data.completed_at) : ''}</p>`;
 
@@ -461,12 +733,16 @@
             html += `<p style="margin-top: 0.5rem;">Task: ${escapeHtml(data.task_description)}</p>`;
         }
 
+        if (data.branch_name) {
+            html += `<p class="muted" style="margin-top: 0.25rem;">Branch: <code>${escapeHtml(data.branch_name)}</code></p>`;
+        }
+
         html += `<hr style="border-color: var(--border); margin: 1rem 0;">`;
 
         const tasks = data.tasks || [];
         for (const t of tasks) {
             html += `<div style="margin-bottom: 1rem;">
-                <p><strong>${t.teammate}</strong> ${statusBadge(t.status)}
+                <p><strong>${escapeHtml(t.teammate)}</strong> ${statusBadge(t.status)}
                    <span class="muted" style="margin-left: 0.5rem;">${formatTime(t.started_at)}</span></p>`;
             if (t.role) {
                 html += `<p class="muted" style="font-size: 0.8rem; margin-top: 0.25rem;">${escapeHtml(t.role)}</p>`;
@@ -539,7 +815,9 @@
         wsTeams.onmessage = (e) => {
             try {
                 const data = JSON.parse(e.data);
-                if (data.type === "new_team_session") {
+                if (data.type === "team_progress") {
+                    handleTeamProgress(data);
+                } else if (data.type === "new_team_session") {
                     const activePanel = document.querySelector(".panel.active");
                     if (activePanel && activePanel.id === "panel-teams") {
                         loadTeams();
