@@ -282,23 +282,7 @@ async def api_teams(limit: int = Query(50, ge=1, le=200), offset: int = Query(0,
     return {"sessions": sessions, "total": total, "limit": limit, "offset": offset}
 
 
-@app.get("/api/teams/{session_id}")
-async def api_team_detail(session_id: int):
-    session = await db.get_team_session(session_id)
-    if not session:
-        return {"error": "Not found"}, 404
-    tasks = await db.get_team_tasks(session_id)
-    return {**session, "tasks": tasks}
-
-
-@app.get("/api/teams/{session_id}/tasks")
-async def api_team_tasks(session_id: int):
-    tasks = await db.get_team_tasks(session_id)
-    return tasks
-
-
-# ── Team launcher endpoints ───────────────────────────────────────────
-
+# Static team paths MUST come before {session_id} to avoid route conflicts
 @app.get("/api/teams/templates")
 async def api_team_templates():
     return get_available_teams()
@@ -317,6 +301,23 @@ async def api_team_launch(request: Request):
     result = await team_launcher.launch(team_name, task_description, repo_path)
     return result
 
+
+@app.get("/api/teams/{session_id}")
+async def api_team_detail(session_id: int):
+    session = await db.get_team_session(session_id)
+    if not session:
+        return {"error": "Not found"}, 404
+    tasks = await db.get_team_tasks(session_id)
+    return {**session, "tasks": tasks}
+
+
+@app.get("/api/teams/{session_id}/tasks")
+async def api_team_tasks(session_id: int):
+    tasks = await db.get_team_tasks(session_id)
+    return tasks
+
+
+# ── Team launcher endpoints ───────────────────────────────────────────
 
 @app.get("/api/teams/{session_id}/diff")
 async def api_team_diff(session_id: str):
