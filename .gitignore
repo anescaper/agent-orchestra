@@ -16,6 +16,8 @@ outputs/
 # Dashboard
 dashboard/dashboard.db
 dashboard/.venv/
+__pycache__/
+*.pyc
 
 # OS
 .DS_Store
