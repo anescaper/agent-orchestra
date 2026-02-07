@@ -25,6 +25,7 @@
         <button class="tab" data-panel="logs">Logs</button>
         <button class="tab" data-panel="control">Control</button>
         <button class="tab" data-panel="costs">Costs</button>
+        <button class="tab" data-panel="teams">Teams</button>
     </nav>
 
     <main>
@@ -192,6 +193,40 @@
                 <h2>Cost by Date</h2>
                 <div id="cost-by-date" class="table-wrap">
                     <p class="muted">Loading...</p>
+                </div>
+            </div>
+        </section>
+
+        <!-- Teams Panel -->
+        <section id="panel-teams" class="panel">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">Team Sessions</div>
+                    <div class="stat-value" id="teams-total">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Now</div>
+                    <div class="stat-value" id="teams-active">0</div>
+                </div>
+            </div>
+
+            <div class="card">
+                <h2>Team Sessions</h2>
+                <div id="teams-table" class="table-wrap">
+                    <p class="muted">Loading...</p>
+                </div>
+            </div>
+
+            <!-- Team detail modal -->
+            <div id="team-detail-modal" class="modal hidden">
+                <div class="modal-content card">
+                    <div class="modal-header">
+                        <h2 id="team-detail-title">Team Session Detail</h2>
+                        <button class="btn btn-sm" id="close-team-modal">&times;</button>
+                    </div>
+                    <div id="team-detail-body">
+                        <p class="muted">Loading...</p>
+                    </div>
                 </div>
             </div>
         </section>

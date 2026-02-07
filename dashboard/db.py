@@ -63,10 +63,39 @@ async def init_db() -> None:
             source TEXT
         );
 
+        CREATE TABLE IF NOT EXISTS team_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id TEXT UNIQUE,
+            team_name TEXT NOT NULL,
+            task_description TEXT,
+            status TEXT NOT NULL DEFAULT 'running',
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            filename TEXT,
+            teammate_count INTEGER DEFAULT 0,
+            success_count INTEGER DEFAULT 0,
+            fail_count INTEGER DEFAULT 0
+        );
+
+        CREATE TABLE IF NOT EXISTS team_tasks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_id INTEGER NOT NULL,
+            teammate TEXT NOT NULL,
+            role TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            output TEXT,
+            error TEXT,
+            started_at TEXT,
+            completed_at TEXT,
+            FOREIGN KEY (session_id) REFERENCES team_sessions(id) ON DELETE CASCADE
+        );
+
         CREATE INDEX IF NOT EXISTS idx_executions_timestamp ON executions(timestamp);
         CREATE INDEX IF NOT EXISTS idx_agent_results_execution ON agent_results(execution_id);
         CREATE INDEX IF NOT EXISTS idx_agent_results_agent ON agent_results(agent);
         CREATE INDEX IF NOT EXISTS idx_logs_timestamp ON logs(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_team_sessions_started ON team_sessions(started_at);
+        CREATE INDEX IF NOT EXISTS idx_team_tasks_session ON team_tasks(session_id);
         """
     )
     await db.commit()
@@ -268,6 +297,98 @@ async def get_cost_breakdown() -> dict:
         "by_agent": by_agent,
         "by_date": by_date,
     }
+
+
+# ── Team Sessions ──────────────────────────────────────────────────────
+
+async def team_session_exists(session_id: str) -> bool:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT 1 FROM team_sessions WHERE session_id = ?", (session_id,)
+    )
+    return await cursor.fetchone() is not None
+
+
+async def insert_team_session(
+    session_id: str,
+    team_name: str,
+    task_description: str | None,
+    status: str,
+    started_at: str,
+    completed_at: str | None,
+    filename: str | None,
+    teammate_count: int,
+    success_count: int,
+    fail_count: int,
+) -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO team_sessions
+           (session_id, team_name, task_description, status, started_at,
+            completed_at, filename, teammate_count, success_count, fail_count)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, team_name, task_description, status, started_at,
+         completed_at, filename, teammate_count, success_count, fail_count),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def insert_team_task(
+    session_id: int,
+    teammate: str,
+    role: str | None,
+    status: str,
+    output: str | None,
+    error: str | None,
+    started_at: str | None,
+    completed_at: str | None,
+) -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO team_tasks
+           (session_id, teammate, role, status, output, error, started_at, completed_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+        (session_id, teammate, role, status, output, error, started_at, completed_at),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def get_team_sessions(limit: int = 50, offset: int = 0) -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM team_sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_team_session(session_id: int) -> dict | None:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM team_sessions WHERE id = ?", (session_id,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def get_team_tasks(session_id: int) -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM team_tasks WHERE session_id = ? ORDER BY id",
+        (session_id,),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_team_session_count() -> int:
+    db = await get_db()
+    cursor = await db.execute("SELECT COUNT(*) FROM team_sessions")
+    row = await cursor.fetchone()
+    return row[0]
 
 
 # ── Logs ────────────────────────────────────────────────────────────────

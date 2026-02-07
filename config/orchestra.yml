@@ -112,6 +112,91 @@ logging:
   level: "INFO"
   format: "json"
 
+# Agent Teams configuration (Claude Code Agent Teams / Opus 4.6)
+teams:
+  enabled: true
+  # Directory where Claude Code stores team task state
+  tasks_dir: "~/.claude/tasks"
+  # Where to save team results
+  output_prefix: "teams"
+
+  definitions:
+    feature-dev:
+      description: "Full feature development lifecycle"
+      teammates:
+        - name: architect
+          role: >
+            You are a software architect. Analyze the requirements, design the
+            solution architecture, define interfaces, and identify edge cases.
+            Output a clear implementation plan with file-by-file changes.
+          timeout_seconds: 300
+        - name: implementer
+          role: >
+            You are a senior developer. Follow the architect's plan exactly.
+            Write clean, tested, production-ready code. Include error handling
+            and follow existing project conventions.
+          timeout_seconds: 600
+        - name: reviewer
+          role: >
+            You are a code reviewer. Review the implementation for correctness,
+            edge cases, security issues, and style consistency. Provide specific
+            actionable feedback with line references.
+          timeout_seconds: 300
+
+    code-review:
+      description: "Thorough code review with security and style focus"
+      teammates:
+        - name: security-reviewer
+          role: >
+            You are a security engineer. Audit the code for OWASP top 10
+            vulnerabilities, injection risks, authentication flaws, and data
+            exposure. Rate severity and provide fix recommendations.
+          timeout_seconds: 300
+        - name: style-reviewer
+          role: >
+            You are a code quality expert. Review for readability, naming
+            conventions, DRY violations, complexity, and consistency with the
+            project's existing patterns. Suggest concrete improvements.
+          timeout_seconds: 300
+
+    debug:
+      description: "Systematic debugging workflow"
+      teammates:
+        - name: reproducer
+          role: >
+            You are a QA engineer. Reproduce the reported bug by analyzing
+            the code path, identifying inputs that trigger the issue, and
+            writing a minimal reproduction case or failing test.
+          timeout_seconds: 300
+        - name: analyzer
+          role: >
+            You are a debugging specialist. Analyze the reproduction case,
+            trace the root cause through the codebase, and explain exactly
+            why the bug occurs with references to specific code locations.
+          timeout_seconds: 300
+        - name: fixer
+          role: >
+            You are a senior developer focused on bug fixes. Implement the
+            minimal correct fix based on the root cause analysis. Ensure the
+            fix doesn't introduce regressions and add test coverage.
+          timeout_seconds: 300
+
+    research:
+      description: "Research and synthesize information on a topic"
+      teammates:
+        - name: searcher
+          role: >
+            You are a research analyst. Search broadly for information on
+            the given topic. Gather relevant sources, code examples, docs,
+            and prior art. Organize findings by relevance and quality.
+          timeout_seconds: 300
+        - name: synthesizer
+          role: >
+            You are a technical writer. Synthesize the research findings
+            into a clear, actionable summary. Highlight key insights,
+            trade-offs, and specific recommendations for our project.
+          timeout_seconds: 300
+
 # Feature flags
 features:
   parallel_execution: false

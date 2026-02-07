@@ -22,3 +22,8 @@ __pycache__/
 # OS
 .DS_Store
 Thumbs.db
+
+# Scripts — do NOT ignore scripts/ (they are tracked)
+# But ignore any local/temp script outputs
+scripts/*.log
+scripts/*.tmp

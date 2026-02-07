@@ -426,6 +426,16 @@ select:focus {
     color: var(--text-secondary);
 }
 
+/* Teams badge pulse for running sessions */
+.badge-info.pulse {
+    animation: pulse 2s ease-in-out infinite;
+}
+
+@keyframes pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+
 /* Utility */
 .muted { color: var(--text-muted); }
 .mt-1 { margin-top: 0.75rem; }
