@@ -255,10 +255,11 @@ class GeneralManager:
                     await self._log("info", f"Agent {sid} finished: {status}")
 
             c = len(completed)
-            f = sum(
-                1 for sid in completed
-                if (await db.get_team_session_by_session_id(sid) or {}).get("status") == "failed"
-            )
+            f = 0
+            for sid in completed:
+                s = await db.get_team_session_by_session_id(sid)
+                if s and s.get("status") == "failed":
+                    f += 1
             await db.update_gm_project_merge_progress(
                 project_id, completed_count=c, failed_count=f,
             )
