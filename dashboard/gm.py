@@ -734,6 +734,7 @@ class GeneralManager:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "claude",
+                "--dangerously-skip-permissions",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "-p", prompt,
                 cwd=repo_path,

@@ -197,6 +197,18 @@ teams:
             trade-offs, and specific recommendations for our project.
           timeout_seconds: 300
 
+    build-fix:
+      description: "Iterative build and fix — single focused agent"
+      teammates:
+        - name: fixer
+          role: >
+            You are a senior developer. Run the build command, read the errors,
+            fix them one by one, and repeat until the build passes cleanly.
+            Then run tests and fix any failures. Then run clippy and fix warnings.
+            Work iteratively and efficiently. Do not over-engineer — make minimal
+            targeted fixes to get things compiling and passing.
+          timeout_seconds: 900
+
     # === Auto-Rebalance Project — 6 Parallel Agents ===
 
     signal-processing:
@@ -298,6 +310,43 @@ gm_projects:
         task: "Implement AGENT 5: Advanced frontend (charts, dashboards). Read .agent-plans/AGENT_5_FRONTEND.md for the full plan."
       - team: testing-deployment
         task: "Implement AGENT 6: Testing, CI/CD, Docker, docs, monitoring. Read .agent-plans/AGENT_6_TESTING_DEPLOYMENT.md for the full plan."
+
+  auto-rebalance-fix:
+    description: "Build & fix all auto-rebalance components"
+    repo_path: "/Users/wangjiacheng/Projects/claudeworkspace/auto-rebalance-project"
+    build_command: "cd signal-engine && cargo build 2>&1 && cd ../polymarket-arb && cargo build 2>&1"
+    test_command: "cd signal-engine && cargo test 2>&1 && cd ../polymarket-arb && cargo test 2>&1"
+    agents:
+      - team: build-fix
+        task: >
+          Build and fix the signal-engine Rust crate. Run: cd signal-engine && cargo build 2>&1
+          Fix ALL compilation errors — missing imports, type mismatches, trait bounds, etc.
+          Then run: cargo test 2>&1 — fix any test failures.
+          Then run: cargo clippy 2>&1 — fix warnings.
+          Keep iterating until cargo build && cargo test && cargo clippy all pass cleanly.
+          Do NOT modify any other crate outside signal-engine/.
+      - team: build-fix
+        task: >
+          Build and fix the polymarket-arb Rust crate. Run: cd polymarket-arb && cargo build 2>&1
+          Fix ALL compilation errors — missing imports, type mismatches, trait bounds, etc.
+          Then run: cargo test 2>&1 — fix any test failures.
+          Then run: cargo clippy 2>&1 — fix warnings.
+          Keep iterating until cargo build && cargo test && cargo clippy all pass cleanly.
+          Do NOT modify any other crate outside polymarket-arb/.
+      - team: build-fix
+        task: >
+          Build and fix the auto-rebalance-contract Anchor/Solana program.
+          Run: cd auto-rebalance-contract && cargo build 2>&1 (or anchor build if available)
+          Fix ALL compilation errors. Check Anchor.toml, Cargo.toml, and program source.
+          Ensure the program compiles cleanly. Do NOT modify other directories.
+      - team: build-fix
+        task: >
+          Build and fix the TypeScript bot and frontend.
+          First: cd bot && npm install 2>&1 && npx tsc --noEmit 2>&1
+          Fix ALL TypeScript type errors in bot/.
+          Then: cd ../auto-rebalance-frontend && npm install 2>&1 && npm run build 2>&1
+          Fix ALL build errors in auto-rebalance-frontend/.
+          Keep iterating until both compile cleanly. Do NOT modify Rust crates.
 
 # Feature flags
 features:
