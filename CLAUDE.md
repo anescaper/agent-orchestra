@@ -64,9 +64,12 @@ Automated multi-agent lifecycle: launch → wait → analyze → merge → build
 - **Pipeline phases**: launching → waiting → analyzing → merging → building → testing → completed/failed
 - **Merge strategy**: Score branches by file overlap, sort ascending (least-conflicting first), merge sequentially
 - **Claude integration**: Spawns `claude -p` subprocesses for conflict resolution, build fixes, test fixes
+- **Approval gate**: Pipeline pauses on merge conflicts, build failures, and test failures — broadcasts a decision card to the dashboard and waits for user to Approve (proceed with Claude fix) or Reject (skip/fail). Uses `asyncio.Event` per decision for zero-cost blocking.
+- **Decisions DB**: `gm_decisions` table tracks decision_id, type, description, proposed_action, context, status (pending/approved/rejected)
 - **Config**: `gm_projects:` section in `config/orchestra.yml` defines project templates with agents, build/test commands
-- **Endpoints**: `/api/gm/templates`, `/api/gm/launch`, `/api/gm/projects`, `/api/gm/projects/{id}/cancel|retry|push`
-- **WebSocket**: `/ws/gm` broadcasts `gm_progress` events for real-time UI updates
+- **Endpoints**: `/api/gm/templates`, `/api/gm/launch`, `/api/gm/projects`, `/api/gm/projects/{id}/cancel|retry|push`, `/api/gm/projects/{id}/decisions`, `/api/gm/decisions/{id}/resolve`
+- **WebSocket**: `/ws/gm` broadcasts `gm_progress` events including `decision_required` and `decision_resolved` for real-time UI updates
+- **Dashboard UI**: Yellow-bordered pulsing decision cards with problem description, proposed action, error context preview, and Approve/Reject buttons
 
 ## Key Patterns
 
