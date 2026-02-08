@@ -26,6 +26,7 @@
         <button class="tab" data-panel="control">Control</button>
         <button class="tab" data-panel="costs">Costs</button>
         <button class="tab" data-panel="teams">Teams</button>
+        <button class="tab" data-panel="gm">GM</button>
     </nav>
 
     <main>
@@ -274,6 +275,83 @@
                     </div>
                     <div id="diff-stat" class="muted" style="margin-bottom: 0.75rem; font-size: 0.8rem;"></div>
                     <div id="diff-viewer" class="diff-viewer"></div>
+                </div>
+            </div>
+        </section>
+        <!-- GM Panel -->
+        <section id="panel-gm" class="panel">
+            <div class="stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">GM Projects</div>
+                    <div class="stat-value" id="gm-total">-</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">Active Pipelines</div>
+                    <div class="stat-value" id="gm-active">0</div>
+                </div>
+            </div>
+
+            <!-- Launch Form -->
+            <div class="card launch-form" id="gm-launch-card">
+                <h2>Launch GM Pipeline</h2>
+                <div class="launch-form-row">
+                    <div class="launch-form-field">
+                        <label for="gm-template-select">Project Template</label>
+                        <select id="gm-template-select" class="input-field">
+                            <option value="">Loading templates...</option>
+                        </select>
+                    </div>
+                    <div class="launch-form-field">
+                        <label for="gm-repo-path">Repository Path</label>
+                        <input type="text" id="gm-repo-path" class="input-field" placeholder="Auto-filled from template">
+                    </div>
+                </div>
+                <div class="launch-form-row" style="margin-top: 0.75rem;">
+                    <div class="launch-form-field">
+                        <label for="gm-build-cmd">Build Command</label>
+                        <input type="text" id="gm-build-cmd" class="input-field" placeholder="e.g. cargo build">
+                    </div>
+                    <div class="launch-form-field">
+                        <label for="gm-test-cmd">Test Command</label>
+                        <input type="text" id="gm-test-cmd" class="input-field" placeholder="e.g. cargo test">
+                    </div>
+                </div>
+                <div style="margin-top: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                    <button class="btn btn-success" id="btn-gm-launch">Launch Pipeline</button>
+                    <span id="gm-launch-status" class="muted"></span>
+                </div>
+            </div>
+
+            <!-- Active Pipeline View -->
+            <div class="card hidden" id="gm-pipeline-card">
+                <div class="logs-header">
+                    <h2>Pipeline — <span id="gm-pipeline-name"></span></h2>
+                    <button class="btn btn-danger btn-sm" id="btn-gm-cancel">Cancel</button>
+                </div>
+
+                <!-- Phase Bar -->
+                <div class="gm-pipeline" id="gm-phase-bar">
+                    <div class="gm-phase" data-phase="launching">Launch</div>
+                    <div class="gm-phase" data-phase="waiting">Waiting</div>
+                    <div class="gm-phase" data-phase="analyzing">Analyzing</div>
+                    <div class="gm-phase" data-phase="merging">Merging</div>
+                    <div class="gm-phase" data-phase="building">Building</div>
+                    <div class="gm-phase" data-phase="testing">Testing</div>
+                    <div class="gm-phase" data-phase="completed">Done</div>
+                </div>
+
+                <!-- Agent Cards Grid -->
+                <div class="gm-agents-grid" id="gm-agents-grid"></div>
+
+                <!-- Log Terminal -->
+                <div class="progress-terminal" id="gm-log-terminal" style="margin-top: 1rem;"></div>
+            </div>
+
+            <!-- Projects History -->
+            <div class="card">
+                <h2>GM Projects History</h2>
+                <div id="gm-projects-table" class="table-wrap">
+                    <p class="muted">Loading...</p>
                 </div>
             </div>
         </section>

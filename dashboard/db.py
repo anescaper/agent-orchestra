@@ -100,6 +100,9 @@ async def init_db() -> None:
     )
     await db.commit()
 
+    # GM tables
+    await _ensure_gm_tables()
+
     # Idempotent schema migration: add worktree columns to team_sessions
     for col, coldef in [
         ("repo_path", "TEXT"),
@@ -480,5 +483,228 @@ async def get_logs(limit: int = 100, offset: int = 0, level: str | None = None) 
             "SELECT * FROM logs ORDER BY timestamp DESC LIMIT ? OFFSET ?",
             (limit, offset),
         )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── GM Projects ────────────────────────────────────────────────────────
+
+async def _ensure_gm_tables() -> None:
+    """Create GM tables if they don't exist (idempotent)."""
+    db = await get_db()
+    await db.executescript(
+        """
+        CREATE TABLE IF NOT EXISTS gm_projects (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT UNIQUE NOT NULL,
+            project_name TEXT NOT NULL,
+            repo_path TEXT NOT NULL,
+            build_command TEXT,
+            test_command TEXT,
+            phase TEXT NOT NULL DEFAULT 'created',
+            agent_count INTEGER DEFAULT 0,
+            completed_count INTEGER DEFAULT 0,
+            failed_count INTEGER DEFAULT 0,
+            merged_count INTEGER DEFAULT 0,
+            merge_order TEXT,
+            current_merge TEXT,
+            build_attempts INTEGER DEFAULT 0,
+            test_attempts INTEGER DEFAULT 0,
+            started_at TEXT NOT NULL,
+            completed_at TEXT,
+            error_message TEXT
+        );
+
+        CREATE TABLE IF NOT EXISTS gm_agent_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            project_id TEXT NOT NULL,
+            session_id TEXT NOT NULL,
+            team_name TEXT NOT NULL,
+            task_description TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            files_changed TEXT,
+            merge_order_index INTEGER,
+            merge_result TEXT,
+            merged_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES gm_projects(project_id)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_gm_projects_phase ON gm_projects(phase);
+        CREATE INDEX IF NOT EXISTS idx_gm_agent_sessions_project ON gm_agent_sessions(project_id);
+        """
+    )
+    await db.commit()
+
+
+async def insert_gm_project(
+    project_id: str,
+    project_name: str,
+    repo_path: str,
+    build_command: str | None,
+    test_command: str | None,
+    agent_count: int,
+    started_at: str,
+) -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO gm_projects
+           (project_id, project_name, repo_path, build_command, test_command,
+            agent_count, started_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (project_id, project_name, repo_path, build_command, test_command,
+         agent_count, started_at),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def update_gm_project_phase(
+    project_id: str,
+    phase: str,
+    error_message: str | None = None,
+    completed_at: str | None = None,
+) -> None:
+    db = await get_db()
+    if completed_at:
+        await db.execute(
+            "UPDATE gm_projects SET phase = ?, error_message = ?, completed_at = ? WHERE project_id = ?",
+            (phase, error_message, completed_at, project_id),
+        )
+    else:
+        await db.execute(
+            "UPDATE gm_projects SET phase = ?, error_message = ? WHERE project_id = ?",
+            (phase, error_message, project_id),
+        )
+    await db.commit()
+
+
+async def update_gm_project_merge_progress(
+    project_id: str,
+    *,
+    completed_count: int | None = None,
+    failed_count: int | None = None,
+    merged_count: int | None = None,
+    merge_order: str | None = None,
+    current_merge: str | None = None,
+    build_attempts: int | None = None,
+    test_attempts: int | None = None,
+) -> None:
+    db = await get_db()
+    updates: list[str] = []
+    params: list = []
+    for col, val in [
+        ("completed_count", completed_count),
+        ("failed_count", failed_count),
+        ("merged_count", merged_count),
+        ("merge_order", merge_order),
+        ("current_merge", current_merge),
+        ("build_attempts", build_attempts),
+        ("test_attempts", test_attempts),
+    ]:
+        if val is not None:
+            updates.append(f"{col} = ?")
+            params.append(val)
+    if not updates:
+        return
+    params.append(project_id)
+    await db.execute(
+        f"UPDATE gm_projects SET {', '.join(updates)} WHERE project_id = ?",
+        params,
+    )
+    await db.commit()
+
+
+async def get_gm_project(project_id: str) -> dict | None:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM gm_projects WHERE project_id = ?", (project_id,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def get_gm_projects(limit: int = 50, offset: int = 0) -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM gm_projects ORDER BY started_at DESC LIMIT ? OFFSET ?",
+        (limit, offset),
+    )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+async def get_gm_project_count() -> int:
+    db = await get_db()
+    cursor = await db.execute("SELECT COUNT(*) FROM gm_projects")
+    row = await cursor.fetchone()
+    return row[0]
+
+
+async def insert_gm_agent_session(
+    project_id: str,
+    session_id: str,
+    team_name: str,
+    task_description: str | None,
+) -> int:
+    db = await get_db()
+    cursor = await db.execute(
+        """INSERT INTO gm_agent_sessions
+           (project_id, session_id, team_name, task_description)
+           VALUES (?, ?, ?, ?)""",
+        (project_id, session_id, team_name, task_description),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def update_gm_agent_session_status(
+    project_id: str,
+    session_id: str,
+    status: str,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE gm_agent_sessions SET status = ? WHERE project_id = ? AND session_id = ?",
+        (status, project_id, session_id),
+    )
+    await db.commit()
+
+
+async def update_gm_agent_session_files(
+    project_id: str,
+    session_id: str,
+    files_changed: str,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE gm_agent_sessions SET files_changed = ? WHERE project_id = ? AND session_id = ?",
+        (files_changed, project_id, session_id),
+    )
+    await db.commit()
+
+
+async def update_gm_agent_session_merge(
+    project_id: str,
+    session_id: str,
+    merge_order_index: int,
+    merge_result: str,
+    merged_at: str | None = None,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        """UPDATE gm_agent_sessions
+           SET merge_order_index = ?, merge_result = ?, merged_at = ?
+           WHERE project_id = ? AND session_id = ?""",
+        (merge_order_index, merge_result, merged_at, project_id, session_id),
+    )
+    await db.commit()
+
+
+async def get_gm_agent_sessions(project_id: str) -> list[dict]:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM gm_agent_sessions WHERE project_id = ? ORDER BY id",
+        (project_id,),
+    )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]

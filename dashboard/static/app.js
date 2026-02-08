@@ -95,6 +95,7 @@
             case "control": loadControl(); break;
             case "costs": loadCosts(); break;
             case "teams": loadTeams(); loadTeamTemplates(); break;
+            case "gm": loadGM(); loadGMTemplates(); break;
         }
     }
 
@@ -770,6 +771,390 @@
         }
     });
 
+    // ── GM Panel — Templates ────────────────────────────────────────────
+
+    let gmTemplatesLoaded = false;
+    let gmTemplatesData = [];
+    let activeGMProjectId = null;
+
+    async function loadGMTemplates() {
+        if (gmTemplatesLoaded) return;
+        try {
+            const templates = await api("/api/gm/templates");
+            gmTemplatesData = Array.isArray(templates) ? templates : [];
+            const select = $("#gm-template-select");
+            select.innerHTML = '<option value="">-- Select a project template --</option>';
+            for (const t of gmTemplatesData) {
+                const opt = document.createElement("option");
+                opt.value = t.name;
+                opt.textContent = `${t.name} — ${t.description} (${t.agent_count} agents)`;
+                select.appendChild(opt);
+            }
+            gmTemplatesLoaded = true;
+        } catch {
+            $("#gm-template-select").innerHTML = '<option value="">Failed to load templates</option>';
+        }
+    }
+
+    // Auto-fill fields when template changes
+    if ($("#gm-template-select")) {
+        $("#gm-template-select").addEventListener("change", () => {
+            const name = $("#gm-template-select").value;
+            const tpl = gmTemplatesData.find(t => t.name === name);
+            if (tpl) {
+                $("#gm-repo-path").value = tpl.repo_path || "";
+                $("#gm-build-cmd").value = tpl.build_command || "";
+                $("#gm-test-cmd").value = tpl.test_command || "";
+            }
+        });
+    }
+
+    // ── GM Panel — Launch ─────────────────────────────────────────────
+
+    $("#btn-gm-launch").addEventListener("click", async () => {
+        const templateName = $("#gm-template-select").value;
+        const repoPath = $("#gm-repo-path").value.trim();
+        const buildCmd = $("#gm-build-cmd").value.trim();
+        const testCmd = $("#gm-test-cmd").value.trim();
+
+        if (!templateName) {
+            $("#gm-launch-status").textContent = "Please select a project template.";
+            return;
+        }
+        if (!repoPath) {
+            $("#gm-launch-status").textContent = "Repository path is required.";
+            return;
+        }
+
+        const tpl = gmTemplatesData.find(t => t.name === templateName);
+        if (!tpl || !tpl.agents || tpl.agents.length === 0) {
+            $("#gm-launch-status").textContent = "Template has no agents.";
+            return;
+        }
+
+        $("#btn-gm-launch").disabled = true;
+        $("#gm-launch-status").textContent = "Launching pipeline...";
+
+        const result = await apiPost("/api/gm/launch", {
+            project_name: templateName,
+            agents: tpl.agents,
+            repo_path: repoPath,
+            build_command: buildCmd || null,
+            test_command: testCmd || null,
+        });
+
+        if (result.error) {
+            $("#gm-launch-status").textContent = "Error: " + result.error;
+            $("#btn-gm-launch").disabled = false;
+            return;
+        }
+
+        activeGMProjectId = result.project_id;
+        $("#gm-pipeline-name").textContent = templateName;
+        $("#gm-log-terminal").innerHTML = '<div class="term-line term-info">Pipeline started. Launching agents...</div>';
+        $("#gm-pipeline-card").classList.remove("hidden");
+        $("#btn-gm-cancel").disabled = false;
+        $("#gm-agents-grid").innerHTML = "";
+
+        // Set initial phase
+        renderGMPhase("launching");
+
+        $("#gm-launch-status").textContent = "Launched! Project: " + result.project_id;
+        $("#btn-gm-launch").disabled = false;
+
+        loadGMProjects();
+    });
+
+    // ── GM Panel — Cancel ─────────────────────────────────────────────
+
+    $("#btn-gm-cancel").addEventListener("click", async () => {
+        if (!activeGMProjectId) return;
+        if (!confirm("Cancel GM project " + activeGMProjectId + "?")) return;
+
+        $("#btn-gm-cancel").disabled = true;
+        const result = await apiPost(`/api/gm/projects/${activeGMProjectId}/cancel`);
+        if (result.error) {
+            alert("Cancel failed: " + result.error);
+            $("#btn-gm-cancel").disabled = false;
+        } else {
+            appendGMLog("Pipeline cancelled.", "term-warn");
+            activeGMProjectId = null;
+            loadGMProjects();
+        }
+    });
+
+    // ── GM Panel — Phase Bar Rendering ────────────────────────────────
+
+    function renderGMPhase(currentPhase) {
+        const phases = ["launching", "waiting", "analyzing", "merging", "building", "testing", "completed"];
+        const bar = $$("#gm-phase-bar .gm-phase");
+        const currentIdx = phases.indexOf(currentPhase);
+        const isFailed = currentPhase === "failed";
+
+        bar.forEach((el, i) => {
+            el.classList.remove("active", "completed", "failed");
+            const phase = el.dataset.phase;
+            const idx = phases.indexOf(phase);
+
+            if (isFailed) {
+                if (idx < currentIdx) {
+                    el.classList.add("completed");
+                } else if (idx === currentIdx) {
+                    el.classList.add("failed");
+                }
+            } else {
+                if (idx < currentIdx) {
+                    el.classList.add("completed");
+                } else if (idx === currentIdx) {
+                    el.classList.add("active");
+                }
+            }
+        });
+    }
+
+    // ── GM Panel — Agent Cards ────────────────────────────────────────
+
+    function renderGMAgentCard(session) {
+        const grid = $("#gm-agents-grid");
+        let card = grid.querySelector(`[data-session-id="${session.session_id}"]`);
+        if (!card) {
+            card = document.createElement("div");
+            card.className = "gm-agent-card";
+            card.dataset.sessionId = session.session_id;
+            grid.appendChild(card);
+        }
+
+        let filesHtml = "";
+        if (session.files_changed) {
+            try {
+                const files = JSON.parse(session.files_changed);
+                filesHtml = `<div class="agent-files">${files.map(f => escapeHtml(f)).join("<br>")}</div>`;
+            } catch {}
+        }
+
+        let mergeHtml = "";
+        if (session.merge_result) {
+            const cls = session.merge_result === "merged" || session.merge_result === "merged_resolved"
+                ? "text-success" : session.merge_result === "skipped" ? "text-warning" : "";
+            mergeHtml = `<div class="agent-merge ${cls}">${session.merge_result}</div>`;
+        }
+
+        card.innerHTML = `
+            <div class="agent-name">${escapeHtml(session.team_name)}</div>
+            <div class="agent-status">${statusBadge(session.status)}</div>
+            ${filesHtml}
+            ${mergeHtml}
+        `;
+    }
+
+    // ── GM Panel — Log Terminal ───────────────────────────────────────
+
+    function appendGMLog(text, cls) {
+        const terminal = $("#gm-log-terminal");
+        if (!terminal) return;
+        const div = document.createElement("div");
+        div.className = "term-line " + (cls || "term-stdout");
+        div.textContent = text;
+        terminal.appendChild(div);
+        terminal.scrollTop = terminal.scrollHeight;
+    }
+
+    // ── GM Panel — WebSocket Handler ──────────────────────────────────
+
+    function handleGMProgress(data) {
+        if (data.type !== "gm_progress") return;
+        if (data.project_id !== activeGMProjectId) {
+            // Still refresh projects list on completion
+            if (data.event === "project_completed" || data.event === "project_failed") {
+                loadGMProjects();
+            }
+            return;
+        }
+
+        switch (data.event) {
+            case "project_started":
+                appendGMLog(`Project '${data.project_name}' started`, "term-info");
+                break;
+            case "agent_launched":
+                appendGMLog(`Agent launched: ${data.team_name} (${data.session_id})`, "term-info");
+                renderGMAgentCard({ session_id: data.session_id, team_name: data.team_name, status: "running" });
+                break;
+            case "agent_completed":
+                appendGMLog(`Agent ${data.session_id}: ${data.status}`, data.status === "completed" ? "term-info" : "term-stderr");
+                renderGMAgentCard({ session_id: data.session_id, team_name: "", status: data.status });
+                break;
+            case "phase_change":
+                renderGMPhase(data.phase);
+                appendGMLog(`Phase: ${data.phase}`, "term-info");
+                break;
+            case "merge_order_determined":
+                appendGMLog(`Merge order: ${(data.merge_order || []).join(" → ")}`, "term-info");
+                break;
+            case "merge_started":
+                appendGMLog(`Merging: ${data.session_id} (#${data.index + 1})`, "term-info");
+                break;
+            case "merge_completed":
+                if (data.skipped) {
+                    appendGMLog(`Skipped: ${data.session_id}`, "term-warn");
+                } else {
+                    appendGMLog(`Merged: ${data.session_id}`, "term-info");
+                }
+                break;
+            case "merge_conflict":
+                appendGMLog(`Conflict in ${data.session_id}: ${data.error || ""}`, "term-warn");
+                break;
+            case "conflict_resolved":
+                appendGMLog(`Conflicts resolved for ${data.session_id}`, "term-info");
+                break;
+            case "build_started":
+                appendGMLog("Build started...", "term-info");
+                break;
+            case "build_result":
+                appendGMLog(`Build ${data.success ? "passed" : "FAILED"}`, data.success ? "term-info" : "term-stderr");
+                if (!data.success && data.output) {
+                    appendGMLog(data.output.slice(-500), "term-stderr");
+                }
+                break;
+            case "build_fix_attempt":
+                appendGMLog(`Build fix attempt ${data.attempt}...`, "term-warn");
+                break;
+            case "test_started":
+                appendGMLog("Tests started...", "term-info");
+                break;
+            case "test_result":
+                appendGMLog(`Tests ${data.success ? "passed" : "FAILED"}`, data.success ? "term-info" : "term-stderr");
+                if (!data.success && data.output) {
+                    appendGMLog(data.output.slice(-500), "term-stderr");
+                }
+                break;
+            case "test_fix_attempt":
+                appendGMLog(`Test fix attempt ${data.attempt}...`, "term-warn");
+                break;
+            case "project_completed":
+                appendGMLog("Pipeline completed successfully!", "term-info");
+                renderGMPhase("completed");
+                $("#btn-gm-cancel").disabled = true;
+                activeGMProjectId = null;
+                loadGMProjects();
+                break;
+            case "project_failed":
+                appendGMLog(`Pipeline failed: ${data.reason || "unknown"}`, "term-stderr");
+                renderGMPhase("failed");
+                $("#btn-gm-cancel").disabled = true;
+                activeGMProjectId = null;
+                loadGMProjects();
+                break;
+        }
+    }
+
+    // ── GM Panel — Projects Table ─────────────────────────────────────
+
+    async function loadGMProjects() {
+        const data = await api("/api/gm/projects?limit=50");
+        const projects = data.projects || [];
+        const total = data.total || 0;
+
+        $("#gm-total").textContent = total;
+        const active = projects.filter(p => !["completed", "failed"].includes(p.phase)).length;
+        $("#gm-active").textContent = active;
+
+        if (projects.length === 0) {
+            $("#gm-projects-table").innerHTML = '<p class="muted">No GM projects yet. Use the form above to launch one.</p>';
+            return;
+        }
+
+        let html = `<table>
+            <thead><tr><th>Project</th><th>Phase</th><th>Agents</th><th>Merged</th><th>Started</th><th>Actions</th></tr></thead>
+            <tbody>`;
+        for (const p of projects) {
+            const phaseCls = p.phase === "completed" ? "badge-success"
+                : p.phase === "failed" ? "badge-danger"
+                : ["merging", "building", "testing"].includes(p.phase) ? "badge-warning"
+                : "badge-info";
+
+            let actions = "";
+            if (p.phase === "failed") {
+                actions = `<span class="actions-cell">
+                    <button class="btn btn-sm btn-success" onclick="window._gmAction('retry','${escapeHtml(p.project_id)}')">Retry</button>
+                    <button class="btn btn-sm" onclick="window._gmAction('detail','${escapeHtml(p.project_id)}')">Detail</button>
+                </span>`;
+            } else if (p.phase === "completed") {
+                actions = `<span class="actions-cell">
+                    <button class="btn btn-sm btn-success" onclick="window._gmAction('push','${escapeHtml(p.project_id)}')">Push</button>
+                    <button class="btn btn-sm" onclick="window._gmAction('detail','${escapeHtml(p.project_id)}')">Detail</button>
+                </span>`;
+            } else {
+                actions = `<span class="actions-cell">
+                    <button class="btn btn-sm" onclick="window._gmAction('detail','${escapeHtml(p.project_id)}')">Detail</button>
+                </span>`;
+            }
+
+            html += `<tr>
+                <td><strong>${escapeHtml(p.project_name)}</strong></td>
+                <td><span class="badge ${phaseCls}">${p.phase}</span></td>
+                <td>${p.completed_count || 0}/${p.agent_count}</td>
+                <td>${p.merged_count || 0}</td>
+                <td>${formatTime(p.started_at)}</td>
+                <td>${actions}</td>
+            </tr>`;
+        }
+        html += "</tbody></table>";
+        $("#gm-projects-table").innerHTML = html;
+    }
+
+    async function loadGM() {
+        loadGMProjects();
+    }
+
+    // GM action handler
+    window._gmAction = async function (action, projectId) {
+        switch (action) {
+            case "retry": {
+                if (!confirm("Retry failed merges/builds for " + projectId + "?")) return;
+                const result = await apiPost(`/api/gm/projects/${projectId}/retry`);
+                if (result.error) alert("Retry failed: " + result.error);
+                else loadGMProjects();
+                break;
+            }
+            case "push": {
+                if (!confirm("Push merged result to remote for " + projectId + "?")) return;
+                const result = await apiPost(`/api/gm/projects/${projectId}/push`);
+                if (result.error) alert("Push failed: " + result.error);
+                else { alert("Pushed successfully!"); loadGMProjects(); }
+                break;
+            }
+            case "detail": {
+                const data = await api(`/api/gm/projects/${projectId}`);
+                if (data.error) { alert(data.error); return; }
+                // Show in pipeline card
+                activeGMProjectId = projectId;
+                $("#gm-pipeline-name").textContent = data.project_name;
+                $("#gm-pipeline-card").classList.remove("hidden");
+                $("#btn-gm-cancel").disabled = ["completed", "failed"].includes(data.phase);
+                renderGMPhase(data.phase);
+                // Render agent cards
+                const grid = $("#gm-agents-grid");
+                grid.innerHTML = "";
+                for (const s of (data.sessions || [])) {
+                    renderGMAgentCard(s);
+                }
+                // Show error if failed
+                const terminal = $("#gm-log-terminal");
+                terminal.innerHTML = "";
+                if (data.error_message) {
+                    appendGMLog("Error: " + data.error_message, "term-stderr");
+                }
+                if (data.merge_order) {
+                    try {
+                        const order = JSON.parse(data.merge_order);
+                        appendGMLog("Merge order: " + order.join(" → "), "term-info");
+                    } catch {}
+                }
+                break;
+            }
+        }
+    };
+
     // ── WebSocket ───────────────────────────────────────────────────────
 
     function connectWebSockets() {
@@ -823,6 +1208,15 @@
                         loadTeams();
                     }
                 }
+            } catch {}
+        };
+
+        // GM WebSocket
+        const wsGM = new WebSocket(`${base}/ws/gm`);
+        wsGM.onmessage = (e) => {
+            try {
+                const data = JSON.parse(e.data);
+                handleGMProgress(data);
             } catch {}
         };
     }

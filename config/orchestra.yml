@@ -197,6 +197,97 @@ teams:
             trade-offs, and specific recommendations for our project.
           timeout_seconds: 300
 
+    # === Auto-Rebalance Project — 6 Parallel Agents ===
+
+    signal-processing:
+      description: "Agent 1: Advanced signal processing (Fourier, Wavelet, UKF, Particle Filter)"
+      teammates:
+        - name: signal-engineer
+          role: >
+            You are a Rust signal processing engineer. Read and implement the
+            AGENT 1 section from .agent-plans/AGENT_1_2_SIGNAL_AI.md. Create
+            all files under signal-engine/src/filters/ and signal-engine/src/analysis/.
+            Add required dependencies to Cargo.toml. Write tests. Do NOT touch
+            the AI agents section (Agent 2) — another agent handles that.
+          timeout_seconds: 900
+
+    ai-agents:
+      description: "Agent 2: AI agents (DQN, LLM, Ensemble)"
+      teammates:
+        - name: ai-engineer
+          role: >
+            You are a Rust ML/AI engineer. Read and implement the AGENT 2
+            section from .agent-plans/AGENT_1_2_SIGNAL_AI.md. Create all
+            files under signal-engine/src/ai/. Add required dependencies
+            to Cargo.toml (tch, reqwest). Write tests. Do NOT touch the
+            signal processing section (Agent 1).
+          timeout_seconds: 900
+
+    polymarket-arb:
+      description: "Agent 3: Polymarket arbitrage system"
+      teammates:
+        - name: arb-engineer
+          role: >
+            You are a Rust trading systems engineer. Read and implement the
+            full plan from .agent-plans/AGENT_3_POLYMARKET.md. Create the
+            entire polymarket-arb/ crate at the project root with all source
+            files, Cargo.toml, tests. Wire integration with signal-engine.
+          timeout_seconds: 900
+
+    wallet-discovery:
+      description: "Agent 4: Wallet discovery & multi-DEX price aggregation"
+      teammates:
+        - name: discovery-engineer
+          role: >
+            You are a Rust/Solana engineer. Read and implement the full plan
+            from .agent-plans/AGENT_4_DISCOVERY_PRICING.md. Create files under
+            signal-engine/src/discovery/ and signal-engine/src/pricing/. Add
+            API endpoints to server.rs. Add required dependencies to Cargo.toml.
+          timeout_seconds: 900
+
+    advanced-frontend:
+      description: "Agent 5: Advanced frontend (charts, dashboards)"
+      teammates:
+        - name: frontend-engineer
+          role: >
+            You are a TypeScript/React/Next.js frontend engineer. Read and
+            implement the full plan from .agent-plans/AGENT_5_FRONTEND.md.
+            Create components under auto-rebalance-frontend/app/components/.
+            Add required npm dependencies. Follow existing Next.js 16 patterns.
+          timeout_seconds: 900
+
+    testing-deployment:
+      description: "Agent 6: Testing, documentation, CI/CD, Docker"
+      teammates:
+        - name: devops-engineer
+          role: >
+            You are a DevOps/testing engineer. Read and implement the full
+            plan from .agent-plans/AGENT_6_TESTING_DEPLOYMENT.md. Create
+            test suites, benchmarks, Dockerfiles, CI/CD workflows, monitoring
+            configs, deployment scripts, and documentation.
+          timeout_seconds: 900
+
+# GM Projects — General Manager automated pipeline definitions
+gm_projects:
+  auto-rebalance:
+    description: "Full auto-rebalance system build"
+    repo_path: "/Users/wangjiacheng/Projects/claudeworkspace/auto-rebalance-project"
+    build_command: "cargo build"
+    test_command: "cargo test"
+    agents:
+      - team: signal-processing
+        task: "Implement AGENT 1: Advanced signal processing (Fourier, Wavelet, UKF, Particle Filter). Read .agent-plans/AGENT_1_2_SIGNAL_AI.md for the full plan."
+      - team: ai-agents
+        task: "Implement AGENT 2: AI agents (DQN, LLM, Ensemble). Read .agent-plans/AGENT_1_2_SIGNAL_AI.md for the full plan."
+      - team: polymarket-arb
+        task: "Implement AGENT 3: Polymarket arbitrage system. Read .agent-plans/AGENT_3_POLYMARKET.md for the full plan."
+      - team: wallet-discovery
+        task: "Implement AGENT 4: Wallet discovery & multi-DEX price aggregation. Read .agent-plans/AGENT_4_DISCOVERY_PRICING.md for the full plan."
+      - team: advanced-frontend
+        task: "Implement AGENT 5: Advanced frontend (charts, dashboards). Read .agent-plans/AGENT_5_FRONTEND.md for the full plan."
+      - team: testing-deployment
+        task: "Implement AGENT 6: Testing, CI/CD, Docker, docs, monitoring. Read .agent-plans/AGENT_6_TESTING_DEPLOYMENT.md for the full plan."
+
 # Feature flags
 features:
   parallel_execution: false

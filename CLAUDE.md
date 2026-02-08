@@ -53,9 +53,20 @@ Per-agent overrides via `client_mode` in orchestra.yml.
 
 ## Dashboard (FastAPI)
 
-7 tabs: Overview, Agents, History, Logs, Control, Costs, Teams
+8 tabs: Overview, Agents, History, Logs, Control, Costs, Teams, GM
 
-Key modules: `server.py` (16 REST + 3 WS endpoints), `db.py` (SQLite via aiosqlite), `orchestrator.py` (subprocess control), `watcher.py` (file monitoring), `team_launcher.py` (session management), `worktree.py` (git worktree isolation).
+Key modules: `server.py` (REST + WS endpoints), `db.py` (SQLite via aiosqlite), `orchestrator.py` (subprocess control), `watcher.py` (file monitoring), `team_launcher.py` (session management), `worktree.py` (git worktree isolation), `gm.py` (General Manager pipeline).
+
+## General Manager (GM)
+
+Automated multi-agent lifecycle: launch → wait → analyze → merge → build → test → done.
+
+- **Pipeline phases**: launching → waiting → analyzing → merging → building → testing → completed/failed
+- **Merge strategy**: Score branches by file overlap, sort ascending (least-conflicting first), merge sequentially
+- **Claude integration**: Spawns `claude -p` subprocesses for conflict resolution, build fixes, test fixes
+- **Config**: `gm_projects:` section in `config/orchestra.yml` defines project templates with agents, build/test commands
+- **Endpoints**: `/api/gm/templates`, `/api/gm/launch`, `/api/gm/projects`, `/api/gm/projects/{id}/cancel|retry|push`
+- **WebSocket**: `/ws/gm` broadcasts `gm_progress` events for real-time UI updates
 
 ## Key Patterns
 
