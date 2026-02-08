@@ -269,6 +269,17 @@ teams:
 
 # GM Projects — General Manager automated pipeline definitions
 gm_projects:
+  gm-test:
+    description: "Lightweight 2-agent test for approval gate"
+    repo_path: "/tmp/gm-test-repo"
+    build_command: "python3 -c 'import hello'"
+    test_command: "python3 -m pytest test_hello.py -v"
+    agents:
+      - team: feature-dev
+        task: "Add a multiply(a, b) function to hello.py that returns a * b. Also add a test_multiply() test to test_hello.py that asserts multiply(3, 4) == 12."
+      - team: feature-dev
+        task: "Add a subtract(a, b) function to hello.py that returns a - b. Also modify the greet() function to return 'Hi, {name}!' instead of 'Hello, {name}!'. Add a test_subtract() test to test_hello.py."
+
   auto-rebalance:
     description: "Full auto-rebalance system build"
     repo_path: "/Users/wangjiacheng/Projects/claudeworkspace/auto-rebalance-project"
