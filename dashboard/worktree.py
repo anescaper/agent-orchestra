@@ -164,6 +164,23 @@ async def merge_worktree(repo_path: str, session_id: str) -> dict:
     return {"ok": True, "merge_output": out}
 
 
+async def get_files_changed(repo_path: str, session_id: str) -> list[str]:
+    """Get list of files changed by a branch vs its merge base."""
+    branch = f"{BRANCH_PREFIX}/{session_id}"
+
+    rc, base, err = await _run_git("merge-base", "HEAD", branch, cwd=repo_path)
+    if rc != 0:
+        log.warning("Failed to find merge base for %s: %s", branch, err)
+        return []
+
+    rc, out, err = await _run_git("diff", "--name-only", base, branch, cwd=repo_path)
+    if rc != 0:
+        log.warning("Failed to get files changed for %s: %s", branch, err)
+        return []
+
+    return [f for f in out.split("\n") if f.strip()]
+
+
 async def delete_worktree(repo_path: str, session_id: str) -> dict:
     """Force-remove worktree and delete branch without merging."""
     branch = f"{BRANCH_PREFIX}/{session_id}"

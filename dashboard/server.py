@@ -16,6 +16,7 @@ from fastapi.templating import Jinja2Templates
 from starlette.requests import Request
 
 from . import config, db, worktree
+from .gm import GeneralManager, get_available_gm_projects
 from .orchestrator import OrchestratorControl
 from .team_launcher import TeamLauncher, get_available_teams
 from .watcher import backfill_existing_outputs, backfill_team_outputs, watch_outputs
@@ -33,6 +34,7 @@ class ConnectionManager:
         self._status_connections: list[WebSocket] = []
         self._log_connections: list[WebSocket] = []
         self._teams_connections: list[WebSocket] = []
+        self._gm_connections: list[WebSocket] = []
 
     async def connect_status(self, ws: WebSocket):
         await ws.accept()
@@ -46,6 +48,10 @@ class ConnectionManager:
         await ws.accept()
         self._teams_connections.append(ws)
 
+    async def connect_gm(self, ws: WebSocket):
+        await ws.accept()
+        self._gm_connections.append(ws)
+
     def disconnect_status(self, ws: WebSocket):
         if ws in self._status_connections:
             self._status_connections.remove(ws)
@@ -57,6 +63,10 @@ class ConnectionManager:
     def disconnect_teams(self, ws: WebSocket):
         if ws in self._teams_connections:
             self._teams_connections.remove(ws)
+
+    def disconnect_gm(self, ws: WebSocket):
+        if ws in self._gm_connections:
+            self._gm_connections.remove(ws)
 
     async def broadcast_status(self, data: dict):
         dead = []
@@ -88,10 +98,21 @@ class ConnectionManager:
         for ws in dead:
             self.disconnect_teams(ws)
 
+    async def broadcast_gm(self, data: dict):
+        dead = []
+        for ws in self._gm_connections:
+            try:
+                await ws.send_json(data)
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect_gm(ws)
+
 
 manager = ConnectionManager()
 orchestrator = OrchestratorControl()
 team_launcher = TeamLauncher()
+gm_manager = GeneralManager(team_launcher)
 
 
 # ── Orchestrator log callback ───────────────────────────────────────────
@@ -126,6 +147,25 @@ async def on_team_log(level: str, message: str):
 
 team_launcher.set_progress_callback(on_team_progress)
 team_launcher.set_log_callback(on_team_log)
+
+
+# ── GM callbacks ──────────────────────────────────────────────────────
+
+async def on_gm_progress(data: dict):
+    await manager.broadcast_gm(data)
+
+async def on_gm_log(level: str, message: str):
+    ts = datetime.now(timezone.utc).isoformat()
+    await db.insert_log(ts, level, message, source="gm")
+    await manager.broadcast_log({
+        "timestamp": ts,
+        "level": level,
+        "message": message,
+        "source": "gm",
+    })
+
+gm_manager.set_progress_callback(on_gm_progress)
+gm_manager.set_log_callback(on_gm_log)
 
 
 # ── New execution callback ──────────────────────────────────────────────
@@ -193,6 +233,7 @@ async def lifespan(app: FastAPI):
         await watcher_task
     except asyncio.CancelledError:
         pass
+    await gm_manager.cancel_all()
     await team_launcher.cancel_all()
     if orchestrator.running:
         await orchestrator.stop()
@@ -366,6 +407,66 @@ async def api_team_cancel(session_id: str):
     return result
 
 
+# ── GM endpoints ──────────────────────────────────────────────────────
+
+@app.get("/api/gm/templates")
+async def api_gm_templates():
+    return get_available_gm_projects()
+
+
+@app.post("/api/gm/launch")
+async def api_gm_launch(request: Request):
+    body = await request.json()
+    project_name = body.get("project_name")
+    agents = body.get("agents", [])
+    repo_path = body.get("repo_path")
+    build_command = body.get("build_command") or None
+    test_command = body.get("test_command") or None
+
+    if not project_name or not agents or not repo_path:
+        return {"error": "project_name, agents, and repo_path are required"}
+
+    result = await gm_manager.launch_project(
+        project_name=project_name,
+        agents=agents,
+        repo_path=repo_path,
+        build_command=build_command,
+        test_command=test_command,
+    )
+    return result
+
+
+@app.get("/api/gm/projects")
+async def api_gm_projects(limit: int = Query(50, ge=1, le=200), offset: int = Query(0, ge=0)):
+    projects = await db.get_gm_projects(limit=limit, offset=offset)
+    total = await db.get_gm_project_count()
+    return {"projects": projects, "total": total, "limit": limit, "offset": offset}
+
+
+@app.get("/api/gm/projects/{project_id}")
+async def api_gm_project_detail(project_id: str):
+    project = await db.get_gm_project(project_id)
+    if not project:
+        return {"error": "Not found"}
+    sessions = await db.get_gm_agent_sessions(project_id)
+    return {**project, "sessions": sessions}
+
+
+@app.post("/api/gm/projects/{project_id}/cancel")
+async def api_gm_cancel(project_id: str):
+    return await gm_manager.cancel_project(project_id)
+
+
+@app.post("/api/gm/projects/{project_id}/retry")
+async def api_gm_retry(project_id: str):
+    return await gm_manager.retry_project(project_id)
+
+
+@app.post("/api/gm/projects/{project_id}/push")
+async def api_gm_push(project_id: str):
+    return await gm_manager.push_project(project_id)
+
+
 # ── Control endpoints ──────────────────────────────────────────────────
 
 @app.post("/api/orchestrator/start")
@@ -411,6 +512,16 @@ async def ws_teams(ws: WebSocket):
             await ws.receive_text()
     except WebSocketDisconnect:
         manager.disconnect_teams(ws)
+
+
+@app.websocket("/ws/gm")
+async def ws_gm(ws: WebSocket):
+    await manager.connect_gm(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect_gm(ws)
 
 
 # ── Entry point ─────────────────────────────────────────────────────────

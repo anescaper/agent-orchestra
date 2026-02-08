@@ -553,6 +553,80 @@ textarea.input-field {
     font-weight: 600;
 }
 
+/* GM Pipeline Phase Bar */
+.gm-pipeline {
+    display: flex;
+    gap: 2px;
+    margin: 1rem 0;
+    border-radius: var(--radius);
+    overflow: hidden;
+}
+
+.gm-phase {
+    flex: 1;
+    padding: 0.5rem 0.75rem;
+    text-align: center;
+    font-size: 0.8rem;
+    font-weight: 500;
+    background: var(--bg-secondary);
+    color: var(--text-muted);
+    transition: background 0.3s, color 0.3s;
+}
+
+.gm-phase.active {
+    background: rgba(79, 195, 247, 0.25);
+    color: var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.gm-phase.completed {
+    background: rgba(102, 187, 106, 0.2);
+    color: var(--success);
+}
+
+.gm-phase.failed {
+    background: rgba(239, 83, 80, 0.2);
+    color: var(--danger);
+}
+
+/* GM Agent Cards Grid */
+.gm-agents-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 0.75rem;
+    margin-top: 1rem;
+}
+
+.gm-agent-card {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 0.75rem;
+    font-size: 0.82rem;
+}
+
+.gm-agent-card .agent-name {
+    font-weight: 600;
+    margin-bottom: 0.4rem;
+    color: var(--text-primary);
+}
+
+.gm-agent-card .agent-status {
+    margin-bottom: 0.3rem;
+}
+
+.gm-agent-card .agent-files {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    max-height: 60px;
+    overflow-y: auto;
+}
+
+.gm-agent-card .agent-merge {
+    margin-top: 0.3rem;
+    font-size: 0.75rem;
+}
+
 /* Actions cell in tables */
 .actions-cell {
     display: inline-flex;
