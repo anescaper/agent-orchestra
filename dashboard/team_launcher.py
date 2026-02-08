@@ -14,7 +14,7 @@ from typing import Callable, Awaitable
 import yaml
 
 from . import config, db
-from .worktree import create_worktree
+from .worktree import create_worktree, _run_git
 
 log = logging.getLogger("dashboard.team_launcher")
 
@@ -191,6 +191,21 @@ class TeamLauncher:
         completed_at = datetime.now(timezone.utc).isoformat()
 
         status = "completed" if exit_code == 0 else "failed"
+
+        # Auto-commit worktree changes so the branch has actual commits
+        session = await db.get_team_session_by_session_id(session_id)
+        wt_path = session.get("worktree_path") if session else None
+        if wt_path:
+            rc, diff_out, _ = await _run_git("status", "--porcelain", cwd=wt_path)
+            if rc == 0 and diff_out.strip():
+                await _run_git("add", "-A", cwd=wt_path)
+                commit_msg = f"feat: {team_name} session {session_id}"
+                rc2, _, cerr = await _run_git("commit", "-m", commit_msg, cwd=wt_path)
+                if rc2 == 0:
+                    log.info("Auto-committed changes in worktree for session %s", session_id)
+                else:
+                    log.warning("Auto-commit failed for session %s: %s", session_id, cerr)
+
         await db.update_team_session_status(session_id, status, completed_at)
 
         # Write result to outputs/
