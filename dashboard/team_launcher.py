@@ -139,6 +139,7 @@ class TeamLauncher:
         try:
             proc = await asyncio.create_subprocess_exec(
                 "claude",
+                "--dangerously-skip-permissions",
                 "--allowedTools", "Edit,Write,Bash,Read,Glob,Grep",
                 "-p", prompt,
                 cwd=worktree_path,
