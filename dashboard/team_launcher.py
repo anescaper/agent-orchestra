@@ -6,9 +6,11 @@ import asyncio
 import json
 import logging
 import os
+import shutil
 import signal
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Callable, Awaitable
 
 import yaml
@@ -17,6 +19,15 @@ from . import config, db
 from .worktree import create_worktree, _run_git
 
 log = logging.getLogger("dashboard.team_launcher")
+
+CRITICAL_ERROR_PATTERNS = [
+    "No space left on device",
+    "ENOSPC",
+    "disk quota exceeded",
+    "cannot allocate memory",
+    "OSError: [Errno 28]",
+]
+CRITICAL_ERROR_THRESHOLD = 2  # Kill after this many occurrences
 
 
 def get_available_teams() -> list[dict]:
@@ -119,6 +130,12 @@ class TeamLauncher:
         env = os.environ.copy()
         env["CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"] = "1"
 
+        cargo_toml = Path(effective_repo) / "Cargo.toml"
+        if cargo_toml.exists():
+            shared_target = str(Path(effective_repo) / ".shared-target")
+            env["CARGO_TARGET_DIR"] = shared_target
+            log.info("Set CARGO_TARGET_DIR=%s for session %s", shared_target, session_id)
+
         try:
             proc = await asyncio.create_subprocess_exec(
                 "claude",
@@ -163,8 +180,11 @@ class TeamLauncher:
     ) -> None:
         """Read stdout/stderr, broadcast progress, finalize on exit."""
         collected_stdout: list[str] = []
+        error_counts: dict[str, int] = {}
+        kill_triggered = False
 
         async def _read_stream(stream, stream_name: str):
+            nonlocal kill_triggered
             while True:
                 line = await stream.readline()
                 if not line:
@@ -173,6 +193,28 @@ class TeamLauncher:
                 if text:
                     if stream_name == "stdout":
                         collected_stdout.append(text)
+
+                    # Check stderr for critical resource errors
+                    if stream_name == "stderr":
+                        for pattern in CRITICAL_ERROR_PATTERNS:
+                            if pattern in text:
+                                error_counts[pattern] = error_counts.get(pattern, 0) + 1
+                                if error_counts[pattern] >= CRITICAL_ERROR_THRESHOLD:
+                                    kill_triggered = True
+                                    log.error(
+                                        "Session %s hit critical error %dx: %s",
+                                        session_id, error_counts[pattern], pattern,
+                                    )
+                                    await self._emit_progress({
+                                        "type": "team_progress",
+                                        "session_id": session_id,
+                                        "event": "resource_error",
+                                        "data": f"Auto-killed: '{pattern}' occurred {error_counts[pattern]} times",
+                                        "db_id": db_id,
+                                    })
+                                    proc.kill()
+                                    return
+
                     await self._emit_progress({
                         "type": "team_progress",
                         "session_id": session_id,
@@ -190,7 +232,9 @@ class TeamLauncher:
         exit_code = proc.returncode
         completed_at = datetime.now(timezone.utc).isoformat()
 
-        status = "completed" if exit_code == 0 else "failed"
+        status = "completed" if exit_code == 0 and not kill_triggered else "failed"
+        if kill_triggered:
+            log.error("Session %s killed due to repeated resource errors", session_id)
 
         # Auto-commit worktree changes so the branch has actual commits
         session = await db.get_team_session_by_session_id(session_id)
@@ -205,6 +249,15 @@ class TeamLauncher:
                     log.info("Auto-committed changes in worktree for session %s", session_id)
                 else:
                     log.warning("Auto-commit failed for session %s: %s", session_id, cerr)
+
+            # Clean worktree-local target/ to reclaim disk space
+            wt_target = Path(wt_path) / "target"
+            if wt_target.is_dir():
+                try:
+                    shutil.rmtree(wt_target)
+                    log.info("Cleaned worktree target/ for session %s", session_id)
+                except OSError as e:
+                    log.warning("Failed to clean worktree target/ for session %s: %s", session_id, e)
 
         await db.update_team_session_status(session_id, status, completed_at)
 
