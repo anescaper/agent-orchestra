@@ -64,6 +64,8 @@ class GeneralManager:
         self._active_projects: dict[str, asyncio.Task] = {}
         self._progress_callback: ProgressCallback | None = None
         self._log_callback: Callable | None = None
+        self._pending_decisions: dict[str, asyncio.Event] = {}
+        self._decision_results: dict[str, str] = {}  # decision_id → 'approved'|'rejected'
 
     def set_progress_callback(self, cb: ProgressCallback) -> None:
         self._progress_callback = cb
@@ -79,6 +81,76 @@ class GeneralManager:
     async def _log(self, level: str, message: str) -> None:
         if self._log_callback:
             await self._log_callback(level, message)
+
+    # ── Approval Gate ──────────────────────────────────────────────────
+
+    async def _request_approval(
+        self,
+        project_id: str,
+        decision_type: str,
+        description: str,
+        proposed_action: str,
+        context: str | None = None,
+    ) -> bool:
+        """Create a decision, broadcast it, and wait for user approval. Returns True if approved."""
+        decision_id = f"{project_id}-{decision_type}-{uuid.uuid4().hex[:6]}"
+        ts = datetime.now(timezone.utc).isoformat()
+
+        await db.insert_gm_decision(
+            decision_id=decision_id,
+            project_id=project_id,
+            decision_type=decision_type,
+            description=description,
+            proposed_action=proposed_action,
+            context=context,
+            created_at=ts,
+        )
+
+        event = asyncio.Event()
+        self._pending_decisions[decision_id] = event
+
+        await self._emit(
+            project_id, "decision_required",
+            decision_id=decision_id,
+            decision_type=decision_type,
+            description=description,
+            proposed_action=proposed_action,
+            context=(context or "")[:2048],
+        )
+        await self._log("warn", f"Approval required ({decision_type}): {description}")
+
+        # Block until user responds or task is cancelled
+        await event.wait()
+
+        self._pending_decisions.pop(decision_id, None)
+        result = self._decision_results.pop(decision_id, "rejected")
+        return result == "approved"
+
+    async def resolve_decision(self, decision_id: str, action: str) -> dict:
+        """Called by the server endpoint. Wakes the waiting coroutine."""
+        decision = await db.get_gm_decision(decision_id)
+        if not decision:
+            return {"error": "Decision not found"}
+        if decision["status"] != "pending":
+            return {"error": "Decision already resolved"}
+
+        status = "approved" if action == "approve" else "rejected"
+        ts = datetime.now(timezone.utc).isoformat()
+        await db.resolve_gm_decision(decision_id, status, ts)
+
+        self._decision_results[decision_id] = status
+
+        event = self._pending_decisions.get(decision_id)
+        if event:
+            event.set()
+
+        await self._emit(
+            decision["project_id"], "decision_resolved",
+            decision_id=decision_id,
+            action=status,
+        )
+        await self._log("info", f"Decision {decision_id} {status}")
+        return {"ok": True, "decision_id": decision_id, "action": status}
 
     # ── Launch ─────────────────────────────────────────────────────────
 
@@ -178,11 +250,21 @@ class GeneralManager:
 
                     # Build check after each merge
                     if build_command:
-                        build_ok = await self._run_build(project_id, repo_path, build_command)
+                        build_ok, build_err = await self._run_build(project_id, repo_path, build_command)
                         if not build_ok:
-                            fix_ok = await self._fix_build_with_claude(project_id, repo_path, build_command)
-                            if not fix_ok:
-                                await self._log("warn", f"Build broken after merging {sid}, continuing...")
+                            approved = await self._request_approval(
+                                project_id,
+                                decision_type="build_failure",
+                                description=f"Build failed after merging agent '{sid}'",
+                                proposed_action="Spawn Claude to fix build errors automatically",
+                                context=build_err,
+                            )
+                            if approved:
+                                fix_ok = await self._fix_build_with_claude(project_id, repo_path, build_command)
+                                if not fix_ok:
+                                    await self._log("warn", f"Build broken after merging {sid}, continuing...")
+                            else:
+                                await self._log("info", f"User skipped build fix after merging {sid}")
 
             if merged_count == 0:
                 await self._set_phase(project_id, "failed", error_message="No branches merged successfully")
@@ -193,9 +275,17 @@ class GeneralManager:
             if build_command:
                 await self._set_phase(project_id, "building")
                 await self._emit(project_id, "phase_change", phase="building")
-                build_ok = await self._run_build(project_id, repo_path, build_command)
+                build_ok, build_err = await self._run_build(project_id, repo_path, build_command)
                 if not build_ok:
-                    build_ok = await self._fix_build_with_claude(project_id, repo_path, build_command)
+                    approved = await self._request_approval(
+                        project_id,
+                        decision_type="build_failure",
+                        description="Final build failed after all merges",
+                        proposed_action="Spawn Claude to fix build errors automatically",
+                        context=build_err,
+                    )
+                    if approved:
+                        build_ok = await self._fix_build_with_claude(project_id, repo_path, build_command)
                     if not build_ok:
                         await self._set_phase(project_id, "failed", error_message="Build failed after all fix attempts")
                         await self._emit(project_id, "project_failed", reason="Build failed")
@@ -205,9 +295,17 @@ class GeneralManager:
             if test_command:
                 await self._set_phase(project_id, "testing")
                 await self._emit(project_id, "phase_change", phase="testing")
-                test_ok = await self._run_tests(project_id, repo_path, test_command)
+                test_ok, test_err = await self._run_tests(project_id, repo_path, test_command)
                 if not test_ok:
-                    test_ok = await self._fix_tests_with_claude(project_id, repo_path, test_command)
+                    approved = await self._request_approval(
+                        project_id,
+                        decision_type="test_failure",
+                        description="Tests failed after merges",
+                        proposed_action="Spawn Claude to fix failing tests automatically",
+                        context=test_err,
+                    )
+                    if approved:
+                        test_ok = await self._fix_tests_with_claude(project_id, repo_path, test_command)
                     if not test_ok:
                         await self._set_phase(project_id, "failed", error_message="Tests failed after all fix attempts")
                         await self._emit(project_id, "project_failed", reason="Tests failed")
@@ -338,9 +436,26 @@ class GeneralManager:
             await self._log("info", f"Merged {session_id} successfully")
             return {"ok": True}
 
-        # Merge conflict — try resolving with Claude
-        await self._emit(project_id, "merge_conflict", session_id=session_id, error=result.get("error", ""))
-        await self._log("warn", f"Merge conflict for {session_id}: {result.get('error', '')}")
+        # Merge conflict — request approval before resolving with Claude
+        conflict_error = result.get("error", "")
+        await self._emit(project_id, "merge_conflict", session_id=session_id, error=conflict_error)
+        await self._log("warn", f"Merge conflict for {session_id}: {conflict_error}")
+
+        approved = await self._request_approval(
+            project_id,
+            decision_type="merge_conflict",
+            description=f"Merge conflict while merging branch for agent '{session_id}'",
+            proposed_action="Spawn Claude to resolve merge conflicts automatically",
+            context=conflict_error,
+        )
+
+        if not approved:
+            await _run_git("merge", "--abort", cwd=repo_path)
+            await delete_worktree(repo_path, session_id)
+            await db.update_gm_agent_session_merge(project_id, session_id, index, "skipped", ts)
+            await self._emit(project_id, "merge_completed", session_id=session_id, skipped=True)
+            await self._log("info", f"Skipped {session_id} (user rejected conflict resolution)")
+            return {"error": "User rejected conflict resolution", "skipped": True}
 
         resolve_result = await self._resolve_conflicts_with_claude(project_id, session_id, repo_path)
         if resolve_result.get("ok"):
@@ -350,7 +465,6 @@ class GeneralManager:
 
         # Failed to resolve — abort and skip
         await _run_git("merge", "--abort", cwd=repo_path)
-        # Clean up the branch/worktree
         await delete_worktree(repo_path, session_id)
         await db.update_gm_agent_session_merge(project_id, session_id, index, "skipped", ts)
         await self._emit(project_id, "merge_completed", session_id=session_id, skipped=True)
@@ -399,15 +513,16 @@ class GeneralManager:
 
     # ── Build ──────────────────────────────────────────────────────────
 
-    async def _run_build(self, project_id: str, repo_path: str, build_command: str) -> bool:
-        """Run build command. Returns True if successful."""
+    async def _run_build(self, project_id: str, repo_path: str, build_command: str) -> tuple[bool, str]:
+        """Run build command. Returns (success, error_output)."""
         await self._emit(project_id, "build_started")
 
         rc, stdout, stderr = await self._run_shell(build_command, repo_path)
         ok = rc == 0
+        error_output = (stderr or stdout)[-4096:] if not ok else ""
 
-        await self._emit(project_id, "build_result", success=ok, output=stderr[-4096:] if not ok else "")
-        return ok
+        await self._emit(project_id, "build_result", success=ok, output=error_output)
+        return ok, error_output
 
     async def _fix_build_with_claude(self, project_id: str, repo_path: str, build_command: str) -> bool:
         """Try to fix build errors with Claude, up to MAX_BUILD_FIX_ATTEMPTS."""
@@ -447,15 +562,16 @@ class GeneralManager:
 
     # ── Tests ──────────────────────────────────────────────────────────
 
-    async def _run_tests(self, project_id: str, repo_path: str, test_command: str) -> bool:
-        """Run test command. Returns True if successful."""
+    async def _run_tests(self, project_id: str, repo_path: str, test_command: str) -> tuple[bool, str]:
+        """Run test command. Returns (success, error_output)."""
         await self._emit(project_id, "test_started")
 
         rc, stdout, stderr = await self._run_shell(test_command, repo_path)
         ok = rc == 0
+        error_output = (stderr or stdout)[-4096:] if not ok else ""
 
-        await self._emit(project_id, "test_result", success=ok, output=stderr[-4096:] if not ok else "")
-        return ok
+        await self._emit(project_id, "test_result", success=ok, output=error_output)
+        return ok, error_output
 
     async def _fix_tests_with_claude(self, project_id: str, repo_path: str, test_command: str) -> bool:
         """Try to fix test failures with Claude, up to MAX_TEST_FIX_ATTEMPTS."""
@@ -509,6 +625,12 @@ class GeneralManager:
         task = self._active_projects.get(project_id)
         if not task:
             return {"error": "Project not active"}
+
+        # Unblock any pending decisions so the coroutine can exit cleanly
+        for did, event in list(self._pending_decisions.items()):
+            if did.startswith(project_id):
+                self._decision_results[did] = "rejected"
+                event.set()
 
         task.cancel()
         try:
@@ -579,7 +701,7 @@ class GeneralManager:
         # Re-attempt build/test
         if build_command:
             await self._set_phase(project_id, "building")
-            build_ok = await self._run_build(project_id, repo_path, build_command)
+            build_ok, _ = await self._run_build(project_id, repo_path, build_command)
             if not build_ok:
                 build_ok = await self._fix_build_with_claude(project_id, repo_path, build_command)
                 if not build_ok:
@@ -588,7 +710,7 @@ class GeneralManager:
 
         if test_command:
             await self._set_phase(project_id, "testing")
-            test_ok = await self._run_tests(project_id, repo_path, test_command)
+            test_ok, _ = await self._run_tests(project_id, repo_path, test_command)
             if not test_ok:
                 test_ok = await self._fix_tests_with_claude(project_id, repo_path, test_command)
                 if not test_ok:

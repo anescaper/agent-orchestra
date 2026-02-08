@@ -326,8 +326,14 @@
             <div class="card hidden" id="gm-pipeline-card">
                 <div class="logs-header">
                     <h2>Pipeline — <span id="gm-pipeline-name"></span></h2>
-                    <button class="btn btn-danger btn-sm" id="btn-gm-cancel">Cancel</button>
+                    <div style="display: flex; align-items: center; gap: 1rem;">
+                        <span id="gm-elapsed" class="muted" style="font-size: 0.85rem;"></span>
+                        <button class="btn btn-danger btn-sm" id="btn-gm-cancel">Cancel</button>
+                    </div>
                 </div>
+
+                <!-- Progress Summary -->
+                <div id="gm-progress-summary" class="gm-progress-summary"></div>
 
                 <!-- Phase Bar -->
                 <div class="gm-pipeline" id="gm-phase-bar">
@@ -342,6 +348,9 @@
 
                 <!-- Agent Cards Grid -->
                 <div class="gm-agents-grid" id="gm-agents-grid"></div>
+
+                <!-- Decision Cards -->
+                <div id="gm-decisions-area" class="gm-decisions-area hidden"></div>
 
                 <!-- Log Terminal -->
                 <div class="progress-terminal" id="gm-log-terminal" style="margin-top: 1rem;"></div>

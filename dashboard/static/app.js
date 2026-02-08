@@ -776,6 +776,166 @@
     let gmTemplatesLoaded = false;
     let gmTemplatesData = [];
     let activeGMProjectId = null;
+    let gmPollInterval = null;
+    let gmElapsedInterval = null;
+    let gmStartedAt = null;
+    const gmAgentOutput = {};  // session_id → last N lines
+    const GM_OUTPUT_LINES = 3;
+    let gmSessionIds = new Set();
+
+    function formatDuration(seconds) {
+        if (!seconds || seconds < 0) return "0s";
+        const m = Math.floor(seconds / 60);
+        const s = Math.floor(seconds % 60);
+        return m > 0 ? `${m}m${s.toString().padStart(2, "0")}s` : `${s}s`;
+    }
+
+    function startGMElapsedTimer(startedAt) {
+        gmStartedAt = new Date(startedAt);
+        if (gmElapsedInterval) clearInterval(gmElapsedInterval);
+        gmElapsedInterval = setInterval(() => {
+            const el = $("#gm-elapsed");
+            if (!el || !gmStartedAt) return;
+            const elapsed = (Date.now() - gmStartedAt.getTime()) / 1000;
+            el.textContent = formatDuration(elapsed);
+        }, 1000);
+    }
+
+    function stopGMTimers() {
+        if (gmPollInterval) { clearInterval(gmPollInterval); gmPollInterval = null; }
+        if (gmElapsedInterval) { clearInterval(gmElapsedInterval); gmElapsedInterval = null; }
+    }
+
+    function startGMPolling(projectId) {
+        stopGMTimers();
+        gmPollInterval = setInterval(() => refreshGMPipeline(projectId), 5000);
+    }
+
+    async function refreshGMPipeline(projectId) {
+        const data = await api(`/api/gm/projects/${projectId}`);
+        if (data.error) return;
+
+        renderGMPhase(data.phase);
+        renderGMProgressSummary(data);
+
+        const grid = $("#gm-agents-grid");
+        grid.innerHTML = "";
+        for (const s of (data.sessions || [])) {
+            renderGMAgentCardFull(s, data.started_at);
+        }
+
+        if (data.phase === "completed" || data.phase === "failed") {
+            stopGMTimers();
+            const el = $("#gm-elapsed");
+            if (el && data.started_at && data.completed_at) {
+                const dur = (new Date(data.completed_at) - new Date(data.started_at)) / 1000;
+                el.textContent = formatDuration(dur) + " (done)";
+            }
+            $("#btn-gm-cancel").disabled = true;
+            loadGMProjects();
+        }
+    }
+
+    function renderGMProgressSummary(data) {
+        const el = $("#gm-progress-summary");
+        if (!el) return;
+        const sessions = data.sessions || [];
+        const completed = sessions.filter(s => s.status === "completed" || s.status === "failed").length;
+        const running = sessions.filter(s => s.status === "running").length;
+        const merged = data.merged_count || 0;
+
+        el.innerHTML = `
+            <div class="gm-stat">Agents: <span class="gm-stat-value">${completed}/${data.agent_count}</span> done</div>
+            <div class="gm-stat">Running: <span class="gm-stat-value">${running}</span></div>
+            <div class="gm-stat">Merged: <span class="gm-stat-value">${merged}</span></div>
+            ${data.build_attempts > 0 ? `<div class="gm-stat">Build fixes: <span class="gm-stat-value">${data.build_attempts}</span></div>` : ""}
+            ${data.test_attempts > 0 ? `<div class="gm-stat">Test fixes: <span class="gm-stat-value">${data.test_attempts}</span></div>` : ""}
+        `;
+    }
+
+    function captureGMAgentOutput(data) {
+        if (data.type !== "team_progress") return;
+        if (!gmSessionIds.has(data.session_id)) return;
+        if (data.event !== "stdout" && data.event !== "stderr") return;
+
+        const sid = data.session_id;
+        if (!gmAgentOutput[sid]) gmAgentOutput[sid] = [];
+        gmAgentOutput[sid].push(data.data);
+        if (gmAgentOutput[sid].length > GM_OUTPUT_LINES) {
+            gmAgentOutput[sid].shift();
+        }
+
+        // Live-update the card's output area
+        const card = document.querySelector(`.gm-agent-card[data-session-id="${sid}"]`);
+        if (card) {
+            let outputEl = card.querySelector(".agent-live-output");
+            if (!outputEl) {
+                outputEl = document.createElement("div");
+                outputEl.className = "agent-live-output";
+                card.appendChild(outputEl);
+            }
+            outputEl.textContent = gmAgentOutput[sid].join("\n");
+        }
+    }
+
+    function renderGMAgentCardFull(session, projectStartedAt) {
+        const grid = $("#gm-agents-grid");
+        const card = document.createElement("div");
+        card.className = "gm-agent-card";
+        card.dataset.sessionId = session.session_id;
+        grid.appendChild(card);
+        // Track session IDs for output capture
+        gmSessionIds.add(session.session_id);
+
+        const now = Date.now();
+        let timeHtml = "";
+        if (session.started_at) {
+            const start = new Date(session.started_at).getTime();
+            if (session.completed_at) {
+                const dur = (new Date(session.completed_at).getTime() - start) / 1000;
+                timeHtml = `<div class="agent-time">${formatDuration(dur)}</div>`;
+            } else {
+                const elapsed = (now - start) / 1000;
+                timeHtml = `<div class="agent-time running">${formatDuration(elapsed)}...</div>`;
+            }
+        }
+
+        let filesHtml = "";
+        if (session.files_changed) {
+            try {
+                const files = JSON.parse(session.files_changed);
+                filesHtml = `<div class="agent-files">${files.length} files changed</div>`;
+            } catch {}
+        }
+
+        let mergeHtml = "";
+        if (session.merge_result) {
+            const cls = session.merge_result === "merged" || session.merge_result === "merged_resolved"
+                ? "text-success" : session.merge_result === "skipped" ? "text-warning" : "";
+            mergeHtml = `<div class="agent-merge ${cls}">${session.merge_result}</div>`;
+        }
+
+        // Progress bar
+        const isDone = session.status === "completed" || session.status === "failed";
+        const fillCls = session.status === "failed" ? "failed" : isDone ? "done" : "running";
+        const fillWidth = isDone ? 100 : Math.min(95, 20 + ((now - new Date(session.started_at || now).getTime()) / 1000 / 60) * 2);
+
+        // Show buffered output if available
+        const lines = gmAgentOutput[session.session_id] || [];
+        const liveOutputHtml = lines.length > 0 && session.status === "running"
+            ? `<div class="agent-live-output">${escapeHtml(lines.join("\n"))}</div>`
+            : "";
+
+        card.innerHTML = `
+            <div class="agent-name">${escapeHtml(session.team_name)}</div>
+            <div class="agent-status">${statusBadge(session.status)}</div>
+            ${timeHtml}
+            <div class="agent-progress-bar"><div class="fill ${fillCls}" style="width: ${fillWidth}%"></div></div>
+            ${liveOutputHtml}
+            ${filesHtml}
+            ${mergeHtml}
+        `;
+    }
 
     async function loadGMTemplates() {
         if (gmTemplatesLoaded) return;
@@ -858,6 +1018,8 @@
 
         // Set initial phase
         renderGMPhase("launching");
+        startGMElapsedTimer(new Date().toISOString());
+        startGMPolling(result.project_id);
 
         $("#gm-launch-status").textContent = "Launched! Project: " + result.project_id;
         $("#btn-gm-launch").disabled = false;
@@ -947,6 +1109,77 @@
         `;
     }
 
+    // ── GM Panel — Decision Cards ──────────────────────────────────────
+
+    function renderGMDecisionCard(decision) {
+        const area = $("#gm-decisions-area");
+        if (!area) return;
+        area.classList.remove("hidden");
+
+        // Don't duplicate
+        if (area.querySelector(`[data-decision-id="${decision.decision_id}"]`)) return;
+
+        const card = document.createElement("div");
+        card.className = "gm-decision-card";
+        card.dataset.decisionId = decision.decision_id;
+
+        const typeLabel = (decision.decision_type || "").replace(/_/g, " ");
+        const contextHtml = decision.context
+            ? `<div class="decision-context">${escapeHtml(decision.context.slice(-2048))}</div>`
+            : "";
+
+        card.innerHTML = `
+            <div class="decision-header">
+                <span class="decision-type">${escapeHtml(typeLabel)}</span>
+                <span class="badge badge-warning">Awaiting Approval</span>
+            </div>
+            <div class="decision-description">${escapeHtml(decision.description)}</div>
+            <div class="decision-proposed">Proposed: ${escapeHtml(decision.proposed_action)}</div>
+            ${contextHtml}
+            <div class="decision-actions">
+                <button class="btn btn-sm btn-success" onclick="window._gmDecision('approve','${escapeHtml(decision.decision_id)}')">Approve</button>
+                <button class="btn btn-sm btn-danger" onclick="window._gmDecision('reject','${escapeHtml(decision.decision_id)}')">Reject</button>
+            </div>
+        `;
+        area.appendChild(card);
+    }
+
+    function removeGMDecisionCard(decisionId) {
+        const area = $("#gm-decisions-area");
+        if (!area) return;
+        const card = area.querySelector(`[data-decision-id="${decisionId}"]`);
+        if (card) card.remove();
+        if (area.children.length === 0) area.classList.add("hidden");
+    }
+
+    window._gmDecision = async function (action, decisionId) {
+        const btn = event && event.target;
+        if (btn) btn.disabled = true;
+
+        const result = await apiPost(`/api/gm/decisions/${decisionId}/resolve`, { action });
+        if (result.error) {
+            alert("Decision failed: " + result.error);
+            if (btn) btn.disabled = false;
+        } else {
+            removeGMDecisionCard(decisionId);
+        }
+    };
+
+    function loadPendingDecisions(decisions) {
+        const area = $("#gm-decisions-area");
+        if (!area) return;
+        area.innerHTML = "";
+        const pending = (decisions || []).filter(d => d.status === "pending");
+        if (pending.length === 0) {
+            area.classList.add("hidden");
+            return;
+        }
+        area.classList.remove("hidden");
+        for (const d of pending) {
+            renderGMDecisionCard(d);
+        }
+    }
+
     // ── GM Panel — Log Terminal ───────────────────────────────────────
 
     function appendGMLog(text, cls) {
@@ -1030,6 +1263,14 @@
             case "test_fix_attempt":
                 appendGMLog(`Test fix attempt ${data.attempt}...`, "term-warn");
                 break;
+            case "decision_required":
+                renderGMDecisionCard(data);
+                appendGMLog(`APPROVAL REQUIRED (${data.decision_type}): ${data.description}`, "term-warn");
+                break;
+            case "decision_resolved":
+                removeGMDecisionCard(data.decision_id);
+                appendGMLog(`Decision ${data.decision_id}: ${data.action}`, "term-info");
+                break;
             case "project_completed":
                 appendGMLog("Pipeline completed successfully!", "term-info");
                 renderGMPhase("completed");
@@ -1103,7 +1344,15 @@
     }
 
     async function loadGM() {
-        loadGMProjects();
+        await loadGMProjects();
+        // Auto-show active pipeline if one exists
+        if (!activeGMProjectId) {
+            const data = await api("/api/gm/projects?limit=1");
+            const projects = data.projects || [];
+            if (projects.length > 0 && !["completed", "failed"].includes(projects[0].phase)) {
+                window._gmAction("detail", projects[0].project_id);
+            }
+        }
     }
 
     // GM action handler
@@ -1130,14 +1379,28 @@
                 activeGMProjectId = projectId;
                 $("#gm-pipeline-name").textContent = data.project_name;
                 $("#gm-pipeline-card").classList.remove("hidden");
-                $("#btn-gm-cancel").disabled = ["completed", "failed"].includes(data.phase);
+                const isFinished = ["completed", "failed"].includes(data.phase);
+                $("#btn-gm-cancel").disabled = isFinished;
                 renderGMPhase(data.phase);
-                // Render agent cards
+                renderGMProgressSummary(data);
+                // Render agent cards with timing
                 const grid = $("#gm-agents-grid");
                 grid.innerHTML = "";
                 for (const s of (data.sessions || [])) {
-                    renderGMAgentCard(s);
+                    renderGMAgentCardFull(s, data.started_at);
                 }
+                // Elapsed timer
+                if (data.started_at) {
+                    if (isFinished && data.completed_at) {
+                        const dur = (new Date(data.completed_at) - new Date(data.started_at)) / 1000;
+                        $("#gm-elapsed").textContent = formatDuration(dur) + " (done)";
+                    } else {
+                        startGMElapsedTimer(data.started_at);
+                        startGMPolling(projectId);
+                    }
+                }
+                // Load pending decisions
+                loadPendingDecisions(data.decisions);
                 // Show error if failed
                 const terminal = $("#gm-log-terminal");
                 terminal.innerHTML = "";
@@ -1147,7 +1410,7 @@
                 if (data.merge_order) {
                     try {
                         const order = JSON.parse(data.merge_order);
-                        appendGMLog("Merge order: " + order.join(" → "), "term-info");
+                        appendGMLog("Merge order: " + order.join(" \u2192 "), "term-info");
                     } catch {}
                 }
                 break;
@@ -1202,6 +1465,7 @@
                 const data = JSON.parse(e.data);
                 if (data.type === "team_progress") {
                     handleTeamProgress(data);
+                    captureGMAgentOutput(data);
                 } else if (data.type === "new_team_session") {
                     const activePanel = document.querySelector(".panel.active");
                     if (activePanel && activePanel.id === "panel-teams") {

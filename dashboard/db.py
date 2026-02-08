@@ -529,8 +529,24 @@ async def _ensure_gm_tables() -> None:
             FOREIGN KEY (project_id) REFERENCES gm_projects(project_id)
         );
 
+        CREATE TABLE IF NOT EXISTS gm_decisions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            decision_id TEXT UNIQUE NOT NULL,
+            project_id TEXT NOT NULL,
+            decision_type TEXT NOT NULL,
+            description TEXT NOT NULL,
+            proposed_action TEXT NOT NULL,
+            context TEXT,
+            status TEXT NOT NULL DEFAULT 'pending',
+            created_at TEXT NOT NULL,
+            resolved_at TEXT,
+            FOREIGN KEY (project_id) REFERENCES gm_projects(project_id)
+        );
+
         CREATE INDEX IF NOT EXISTS idx_gm_projects_phase ON gm_projects(phase);
         CREATE INDEX IF NOT EXISTS idx_gm_agent_sessions_project ON gm_agent_sessions(project_id);
+        CREATE INDEX IF NOT EXISTS idx_gm_decisions_project ON gm_decisions(project_id);
+        CREATE INDEX IF NOT EXISTS idx_gm_decisions_status ON gm_decisions(status);
         """
     )
     await db.commit()
@@ -706,5 +722,73 @@ async def get_gm_agent_sessions(project_id: str) -> list[dict]:
         "SELECT * FROM gm_agent_sessions WHERE project_id = ? ORDER BY id",
         (project_id,),
     )
+    rows = await cursor.fetchall()
+    return [dict(r) for r in rows]
+
+
+# ── GM Decisions ──────────────────────────────────────────────────────
+
+async def insert_gm_decision(
+    decision_id: str,
+    project_id: str,
+    decision_type: str,
+    description: str,
+    proposed_action: str,
+    context: str | None,
+    created_at: str,
+) -> int:
+    db = await get_db()
+    # Truncate context to 4KB
+    if context and len(context) > 4096:
+        context = context[-4096:]
+    cursor = await db.execute(
+        """INSERT INTO gm_decisions
+           (decision_id, project_id, decision_type, description,
+            proposed_action, context, created_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (decision_id, project_id, decision_type, description,
+         proposed_action, context, created_at),
+    )
+    await db.commit()
+    return cursor.lastrowid
+
+
+async def resolve_gm_decision(
+    decision_id: str,
+    status: str,
+    resolved_at: str,
+) -> None:
+    db = await get_db()
+    await db.execute(
+        "UPDATE gm_decisions SET status = ?, resolved_at = ? WHERE decision_id = ?",
+        (status, resolved_at, decision_id),
+    )
+    await db.commit()
+
+
+async def get_gm_decision(decision_id: str) -> dict | None:
+    db = await get_db()
+    cursor = await db.execute(
+        "SELECT * FROM gm_decisions WHERE decision_id = ?", (decision_id,)
+    )
+    row = await cursor.fetchone()
+    return dict(row) if row else None
+
+
+async def get_gm_decisions_for_project(
+    project_id: str,
+    status: str | None = None,
+) -> list[dict]:
+    db = await get_db()
+    if status:
+        cursor = await db.execute(
+            "SELECT * FROM gm_decisions WHERE project_id = ? AND status = ? ORDER BY created_at DESC",
+            (project_id, status),
+        )
+    else:
+        cursor = await db.execute(
+            "SELECT * FROM gm_decisions WHERE project_id = ? ORDER BY created_at DESC",
+            (project_id,),
+        )
     rows = await cursor.fetchall()
     return [dict(r) for r in rows]
