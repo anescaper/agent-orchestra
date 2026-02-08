@@ -553,6 +553,81 @@ textarea.input-field {
     font-weight: 600;
 }
 
+/* GM Progress Summary */
+.gm-progress-summary {
+    display: flex;
+    gap: 1.5rem;
+    padding: 0.6rem 0;
+    font-size: 0.82rem;
+    color: var(--text-secondary);
+}
+
+.gm-progress-summary .gm-stat {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+}
+
+.gm-progress-summary .gm-stat-value {
+    font-weight: 600;
+    color: var(--accent);
+}
+
+/* GM Agent Card Timing */
+.gm-agent-card .agent-time {
+    font-size: 0.75rem;
+    color: var(--text-muted);
+    margin-top: 0.3rem;
+}
+
+.gm-agent-card .agent-time.running {
+    color: var(--accent);
+}
+
+.gm-agent-card .agent-progress-bar {
+    height: 3px;
+    background: var(--border);
+    border-radius: 2px;
+    margin-top: 0.4rem;
+    overflow: hidden;
+}
+
+.gm-agent-card .agent-progress-bar .fill {
+    height: 100%;
+    border-radius: 2px;
+    transition: width 0.5s;
+}
+
+.gm-agent-card .agent-progress-bar .fill.running {
+    background: var(--accent);
+    animation: pulse 2s ease-in-out infinite;
+}
+
+.gm-agent-card .agent-progress-bar .fill.done {
+    background: var(--success);
+}
+
+.gm-agent-card .agent-progress-bar .fill.failed {
+    background: var(--danger);
+}
+
+/* GM Agent Live Output */
+.gm-agent-card .agent-live-output {
+    margin-top: 0.4rem;
+    padding: 0.35rem 0.5rem;
+    background: #0a0a14;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.7rem;
+    line-height: 1.4;
+    color: var(--text-muted);
+    white-space: pre-wrap;
+    word-break: break-all;
+    max-height: 55px;
+    overflow-y: auto;
+}
+
 /* GM Pipeline Phase Bar */
 .gm-pipeline {
     display: flex;
@@ -625,6 +700,74 @@ textarea.input-field {
 .gm-agent-card .agent-merge {
     margin-top: 0.3rem;
     font-size: 0.75rem;
+}
+
+/* GM Decision Cards */
+.gm-decisions-area {
+    margin-top: 1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+}
+
+.gm-decision-card {
+    background: var(--bg-secondary);
+    border: 2px solid var(--warning);
+    border-radius: var(--radius);
+    padding: 1rem;
+    animation: decision-pulse 2s ease-in-out infinite;
+}
+
+@keyframes decision-pulse {
+    0%, 100% { border-color: var(--warning); }
+    50% { border-color: rgba(255, 167, 38, 0.4); }
+}
+
+.gm-decision-card .decision-header {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 0.5rem;
+}
+
+.gm-decision-card .decision-type {
+    font-size: 0.75rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    color: var(--warning);
+}
+
+.gm-decision-card .decision-description {
+    font-size: 0.85rem;
+    color: var(--text-primary);
+    margin-bottom: 0.5rem;
+}
+
+.gm-decision-card .decision-proposed {
+    font-size: 0.8rem;
+    color: var(--text-secondary);
+    margin-bottom: 0.5rem;
+}
+
+.gm-decision-card .decision-context {
+    background: #0a0a14;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    padding: 0.5rem;
+    font-family: 'SFMono-Regular', 'Consolas', 'Liberation Mono', monospace;
+    font-size: 0.72rem;
+    line-height: 1.4;
+    color: var(--text-muted);
+    max-height: 120px;
+    overflow-y: auto;
+    white-space: pre-wrap;
+    word-break: break-all;
+    margin-bottom: 0.75rem;
+}
+
+.gm-decision-card .decision-actions {
+    display: flex;
+    gap: 0.5rem;
 }
 
 /* Actions cell in tables */

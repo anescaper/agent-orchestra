@@ -449,7 +449,14 @@ async def api_gm_project_detail(project_id: str):
     if not project:
         return {"error": "Not found"}
     sessions = await db.get_gm_agent_sessions(project_id)
-    return {**project, "sessions": sessions}
+    # Enrich with timing from team_sessions
+    for s in sessions:
+        ts = await db.get_team_session_by_session_id(s["session_id"])
+        if ts:
+            s["started_at"] = ts.get("started_at")
+            s["completed_at"] = ts.get("completed_at")
+    decisions = await db.get_gm_decisions_for_project(project_id)
+    return {**project, "sessions": sessions, "decisions": decisions}
 
 
 @app.post("/api/gm/projects/{project_id}/cancel")
@@ -465,6 +472,20 @@ async def api_gm_retry(project_id: str):
 @app.post("/api/gm/projects/{project_id}/push")
 async def api_gm_push(project_id: str):
     return await gm_manager.push_project(project_id)
+
+
+@app.get("/api/gm/projects/{project_id}/decisions")
+async def api_gm_decisions(project_id: str, status: str | None = None):
+    return await db.get_gm_decisions_for_project(project_id, status=status)
+
+
+@app.post("/api/gm/decisions/{decision_id}/resolve")
+async def api_gm_resolve_decision(decision_id: str, request: Request):
+    body = await request.json()
+    action = body.get("action")
+    if action not in ("approve", "reject"):
+        return {"error": "action must be 'approve' or 'reject'"}
+    return await gm_manager.resolve_decision(decision_id, action)
 
 
 # ── Control endpoints ──────────────────────────────────────────────────
