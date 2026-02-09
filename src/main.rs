@@ -34,7 +34,7 @@ pub struct Orchestrator {
 impl Orchestrator {
     pub fn new() -> Result<Self> {
         // Load environment variables
-        dotenv::dotenv().ok();
+        dotenvy::dotenv().ok();
 
         // Determine client mode (default: claude-code)
         let client_mode_str =
@@ -185,7 +185,14 @@ impl Orchestrator {
         for handle in handles {
             match handle.await {
                 Ok(result) => results.push(result),
-                Err(e) => error!("Task join error: {:?}", e),
+                Err(e) => {
+                    error!("Task join error: {:?}", e);
+                    results.push(AgentResult::failed(
+                        "unknown".to_string(),
+                        format!("Task panicked: {:?}", e),
+                        "unknown".to_string(),
+                    ));
+                }
             }
         }
         results

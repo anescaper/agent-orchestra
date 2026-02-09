@@ -7,7 +7,7 @@ use tracing::{error, info, warn};
 
 const ANTHROPIC_API_URL: &str = "https://api.anthropic.com/v1/messages";
 const ANTHROPIC_VERSION: &str = "2023-06-01";
-const DEFAULT_MODEL: &str = "claude-sonnet-4-20250514";
+const DEFAULT_MODEL: &str = "claude-sonnet-4-5-20250929";
 
 /// The supported client modes.
 #[derive(Debug, Clone, PartialEq)]
@@ -165,9 +165,15 @@ pub struct CliClient {
 
 impl CliClient {
     pub fn new() -> Self {
-        Self {
-            cli_path: "/home/claude/.local/bin/claude".to_string(),
-        }
+        let cli_path = std::env::var("CLAUDE_CLI_PATH").unwrap_or_else(|_| {
+            for path in ["/usr/local/bin/claude", "/home/claude/.local/bin/claude"] {
+                if std::path::Path::new(path).exists() {
+                    return path.to_string();
+                }
+            }
+            "claude".to_string()
+        });
+        Self { cli_path }
     }
 }
 
@@ -369,7 +375,7 @@ mod tests {
     #[test]
     fn test_cli_client_creation() {
         let client = CliClient::new();
-        assert_eq!(client.cli_path, "/home/claude/.local/bin/claude");
+        assert!(!client.cli_path.is_empty());
     }
 
     #[test]

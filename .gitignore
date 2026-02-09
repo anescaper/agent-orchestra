@@ -17,7 +17,7 @@ outputs/
 *.swo
 
 # Dashboard
-dashboard/dashboard.db
+dashboard/dashboard.db*
 dashboard/.venv/
 __pycache__/
 *.pyc

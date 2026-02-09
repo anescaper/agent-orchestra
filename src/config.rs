@@ -187,11 +187,13 @@ fn default_teammate_timeout() -> u64 {
 impl Config {
     pub fn load<P: AsRef<Path>>(path: P) -> Result<Self> {
         let content = fs::read_to_string(path)?;
-        let config: Config = serde_yaml::from_str(&content)?;
+        let config: Config = serde_yml::from_str(&content)?;
         Ok(config)
     }
+}
 
-    pub fn default() -> Self {
+impl Default for Config {
+    fn default() -> Self {
         Self {
             orchestra: OrchestraConfig {
                 name: "Agent Orchestra".to_string(),

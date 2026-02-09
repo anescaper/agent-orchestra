@@ -8,18 +8,17 @@ edition = "2021"
 tokio = { version = "1.35", features = ["full"] }
 
 # HTTP client for API calls
-reqwest = { version = "0.11", default-features = false, features = ["json", "rustls-tls"] }
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Serialization
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 
 # YAML config
-serde_yaml = "0.9"
+serde_yml = "0.0.12"
 
 # Error handling
 anyhow = "1.0"
-thiserror = "1.0"
 
 # Logging
 tracing = "0.1"
@@ -29,7 +28,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 chrono = { version = "0.4", features = ["serde"] }
 
 # Environment variables
-dotenv = "0.15"
+dotenvy = "0.15"
 
 # Async trait support
 async-trait = "0.1"

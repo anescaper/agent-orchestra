@@ -11,7 +11,7 @@ CONFIG_FILE = BASE_DIR / "config" / "orchestra.yml"
 DB_PATH = DASHBOARD_DIR / "dashboard.db"
 
 # Server
-HOST = os.getenv("DASHBOARD_HOST", "0.0.0.0")
+HOST = os.getenv("DASHBOARD_HOST", "127.0.0.1")
 PORT = int(os.getenv("DASHBOARD_PORT", "8080"))
 
 # Orchestrator binary
