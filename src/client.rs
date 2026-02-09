@@ -104,6 +104,7 @@ impl ApiClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_model(mut self, model: &str) -> Self {
         self.model = model.to_string();
         self
@@ -227,6 +228,7 @@ impl HybridClient {
         }
     }
 
+    #[allow(dead_code)]
     pub fn with_model(mut self, model: &str) -> Self {
         self.api = self.api.with_model(model);
         self
