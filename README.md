@@ -2,9 +2,47 @@
 
 Multi-agent orchestration system that launches parallel Claude Code agents, each working in isolated git worktrees, then automatically merges their work back together. Includes a real-time dashboard, an automated General Manager pipeline, and an approval gate for human-in-the-loop decisions.
 
-Built with Rust (orchestrator) + Python/FastAPI (dashboard).
+Built with **Rust** (orchestrator) + **Python/FastAPI** (dashboard).
 
-## What It Does
+## How It Works
+
+```
+                        ┌─────────────────────────────────┐
+                        │      config/orchestra.yml        │
+                        │  agents, teams, modes, features  │
+                        └───────────────┬─────────────────┘
+                                        │
+               ┌────────────────────────┼────────────────────────┐
+               ▼                        ▼                        ▼
+        ┌─────────────┐         ┌─────────────┐         ┌─────────────┐
+        │  ApiClient   │         │  CliClient   │         │ TeamsClient  │
+        │  (HTTP API)  │         │ (claude -p)  │         │ (Opus teams) │
+        │    paid      │         │    free      │         │  per-session │
+        └──────┬──────┘         └──────┬──────┘         └──────┬──────┘
+               │                       │                       │
+               └───────────────────────┼───────────────────────┘
+                                       ▼
+                              ┌─────────────────┐
+                              │   Claude AI      │
+                              │  (Anthropic)     │
+                              └────────┬────────┘
+                                       │
+                                       ▼
+                              ┌─────────────────┐
+                              │  outputs/*.json  │
+                              │  outputs/*.txt   │
+                              └─────────────────┘
+
+        ┌──────────────────────────────────────────────────────┐
+        │              Dashboard (FastAPI + WebSocket)          │
+        │                                                      │
+        │  Overview · Agents · History · Logs · Control         │
+        │  Costs · Teams · General Manager                     │
+        │                                                      │
+        │  Real-time updates via WebSocket with heartbeat      │
+        │  SQLite storage · Subprocess control                 │
+        └──────────────────────────────────────────────────────┘
+```
 
 1. **Define agents** in YAML — each gets a team name, role prompt, and task
 2. **Launch them in parallel** — each agent runs `claude` CLI in its own git worktree/branch
@@ -19,49 +57,35 @@ Built with Rust (orchestrator) + Python/FastAPI (dashboard).
 git clone https://github.com/anescaper/agent-orchestra.git
 cd agent-orchestra
 
+# Copy environment template
+cp .env.example .env
+# Edit .env — set ANTHROPIC_API_KEY if using api/hybrid mode
+
+# Build the Rust orchestrator
+cargo build --release
+
 # Install Python deps
 pip install -r dashboard/requirements.txt
 
 # Start dashboard (http://localhost:8080)
 python3 -m dashboard.server
 
-# Or use the helper script
-./scripts/dashboard.sh 8080
+# Or run the orchestrator directly
+ORCHESTRATOR_MODE=auto CLIENT_MODE=claude-code cargo run
 ```
 
-The dashboard serves a web UI with 8 tabs: Overview, Agents, History, Logs, Control, Costs, Teams, and GM.
+## Client Modes
 
-## Architecture
+The orchestrator supports 4 ways to talk to Claude, configurable globally or per-agent:
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                    Dashboard (FastAPI)                   │
-│  REST API + WebSocket  ·  SQLite  ·  Jinja2 UI          │
-├──────────┬──────────┬──────────┬────────────────────────┤
-│  Teams   │    GM    │ Worktree │   Team Launcher        │
-│ launcher │ pipeline │ manager  │   (subprocess mgmt)    │
-└────┬─────┴────┬─────┴────┬─────┴────────────┬──────────┘
-     │          │          │                  │
-     ▼          ▼          ▼                  ▼
-  claude CLI  claude CLI  git worktree     claude CLI
-  (agent 1)   (agent 2)   add/remove       (agent N)
-     │          │          │                  │
-     └──────────┴──────────┴──────────────────┘
-                       │
-              main repo (merged)
-```
+| Mode | Implementation | Cost | Best For |
+|------|---------------|------|----------|
+| `claude-code` | `CliClient` — spawns `claude -p` subprocess | Free (subscription) | Simple monitoring tasks |
+| `api` | `ApiClient` — HTTP POST to Anthropic API | Paid per token | Analysis with system prompts |
+| `hybrid` | `HybridClient` — tries API, falls back to CLI | Flexible | Production reliability |
+| `agent-teams` | `TeamsClient` — CLI with Agent Teams enabled | Per session | Multi-agent collaboration |
 
-### Key Components
-
-| Component | Path | Purpose |
-|-----------|------|---------|
-| Dashboard server | `dashboard/server.py` | REST + WebSocket endpoints, serves UI |
-| General Manager | `dashboard/gm.py` | Automated launch → merge → build → test pipeline |
-| Team Launcher | `dashboard/team_launcher.py` | Subprocess lifecycle, error detection, shared target dir |
-| Worktree Manager | `dashboard/worktree.py` | Git worktree creation, diffing, merging, cleanup |
-| Database | `dashboard/db.py` | SQLite with 8 tables (sessions, results, decisions, logs) |
-| Rust Orchestrator | `src/` | Standalone orchestrator with 4 client modes |
-| Config | `config/orchestra.yml` | Agent definitions, team templates, GM project templates |
+The CLI path is auto-detected: checks `CLAUDE_CLI_PATH` env, then common system paths, then falls back to `claude` on PATH.
 
 ## Configuration
 
@@ -93,10 +117,23 @@ teams:
         - name: style-reviewer
           role: "Check code style, patterns, and maintainability"
 
+# Per-agent client mode overrides
+agents:
+  monitor:
+    enabled: true
+    timeout_seconds: 120
+    client_mode: "claude-code"    # free CLI for simple tasks
+    system_prompt: "You are a system health monitor..."
+  analyzer:
+    enabled: true
+    timeout_seconds: 180
+    client_mode: "api"            # paid API for complex analysis
+    system_prompt: "You are a data analyst..."
+
 # GM project templates — automated multi-agent pipelines
 gm_projects:
-  auto-rebalance:
-    repo_path: /path/to/your/rust/project
+  my-project:
+    repo_path: /path/to/repo
     build_command: "cargo build"
     test_command: "cargo test"
     agents:
@@ -104,7 +141,6 @@ gm_projects:
         task: "Implement signal processing module"
       - team: feature-dev
         task: "Implement AI agent framework"
-      # ... more agents
 ```
 
 ### Environment Variables
@@ -112,9 +148,13 @@ gm_projects:
 Copy `.env.example` to `.env` and configure:
 
 ```bash
-CLIENT_MODE=claude-code        # claude-code | api | hybrid | agent-teams
-ANTHROPIC_API_KEY=sk-...       # Required for api/hybrid modes
-DASHBOARD_PORT=8080
+CLIENT_MODE=claude-code          # claude-code | api | hybrid | agent-teams
+ANTHROPIC_API_KEY=sk-ant-...     # Required for api/hybrid modes
+CLAUDE_CLI_PATH=/usr/local/bin/claude  # Optional: override CLI auto-detection
+ORCHESTRATOR_MODE=auto           # auto | research | analysis | monitoring | <team-name>
+DASHBOARD_HOST=127.0.0.1        # Dashboard bind address
+DASHBOARD_PORT=8080              # Dashboard port
+RUST_LOG=info                    # Log level
 ```
 
 ## General Manager Pipeline
@@ -137,7 +177,6 @@ When the pipeline encounters a problem it can't auto-resolve, it pauses and asks
 Decisions are broadcast via WebSocket (`/ws/gm`) and stored in the `gm_decisions` database table. Resolve them via the dashboard UI or the REST API:
 
 ```bash
-# Approve a decision
 curl -X POST http://localhost:8080/api/gm/decisions/{id}/resolve \
   -H "Content-Type: application/json" \
   -d '{"action": "approve"}'
@@ -197,6 +236,8 @@ curl -X POST http://localhost:8080/api/gm/launch \
 | `/ws/teams` | `new_team_session`, `team_progress`, `resource_error` |
 | `/ws/gm` | `project_started`, `phase_change`, `merge_started`, `merge_conflict`, `decision_required`, `decision_resolved`, `project_completed` |
 
+All WebSocket connections include automatic heartbeat (ping/pong every 30s) to detect and clean up stale connections.
+
 ## Resource Safety
 
 The team launcher includes protections against runaway agents:
@@ -210,19 +251,20 @@ The team launcher includes protections against runaway agents:
 ```
 agent-orchestra/
 ├── src/                        # Rust orchestrator
-│   ├── main.rs                 #   Sequential/parallel execution
-│   ├── config.rs               #   YAML config parsing
-│   ├── client.rs               #   AgentClient trait (CLI, API, hybrid, teams)
+│   ├── main.rs                 #   Orchestrator + sequential/parallel execution
+│   ├── config.rs               #   YAML config parsing (serde_yml)
+│   ├── client.rs               #   AgentClient trait + 4 implementations
 │   └── agents.rs               #   AgentTask + AgentResult types
 ├── dashboard/                  # Python FastAPI dashboard
-│   ├── server.py               #   REST + WebSocket endpoints
+│   ├── server.py               #   REST + WebSocket endpoints + heartbeat
 │   ├── gm.py                   #   General Manager pipeline
 │   ├── team_launcher.py        #   Team session lifecycle
 │   ├── worktree.py             #   Git worktree operations
 │   ├── db.py                   #   SQLite schema + queries
 │   ├── config.py               #   Dashboard configuration
-│   ├── orchestrator.py         #   Rust orchestrator control
-│   ├── watcher.py              #   File monitoring
+│   ├── orchestrator.py         #   Rust binary subprocess control
+│   ├── watcher.py              #   File system monitoring
+│   ├── models.py               #   Pydantic API models
 │   ├── requirements.txt        #   Python dependencies
 │   ├── static/                 #   Frontend JS + CSS
 │   └── templates/              #   Jinja2 HTML
@@ -232,7 +274,9 @@ agent-orchestra/
 │   ├── dashboard.sh            # Start dashboard
 │   ├── launch-team.sh          # Launch team session
 │   └── team-status.sh          # Check team status
-├── Dockerfile                  # Multi-stage build
+├── .github/workflows/
+│   └── rust-workflow.yml       # CI: fmt, clippy, test, build, deploy
+├── Dockerfile                  # Multi-stage build (Rust + Node.js runtime)
 ├── Cargo.toml                  # Rust dependencies
 └── .env.example                # Environment variables template
 ```
@@ -243,9 +287,19 @@ agent-orchestra/
 docker build -t agent-orchestra .
 docker run -p 8080:8080 \
   -e CLIENT_MODE=claude-code \
-  -e ANTHROPIC_API_KEY=sk-... \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
   agent-orchestra
 ```
+
+## CI/CD
+
+The GitHub Actions pipeline runs on every push to `main` (for `src/`, `Cargo.toml`, `config/` changes), hourly on schedule, and on manual dispatch:
+
+1. **Build** — `cargo fmt --check`, `cargo clippy -D warnings`, `cargo test`, `cargo build --release`
+2. **Monitor** — Reports build status
+3. **Orchestrate** — Downloads binary artifact and runs a real orchestration
+4. **Docker** — Builds and pushes to DigitalOcean Container Registry (requires `DO_API_TOKEN` secret)
+5. **Deploy** — Triggers DigitalOcean App Platform deployment (requires `DO_APP_ID` secret)
 
 ## Lessons from Production Use
 
