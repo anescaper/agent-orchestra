@@ -197,11 +197,7 @@ impl AgentClient for CliClient {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let detail = if !stderr.is_empty() {
-                &stderr
-            } else {
-                &stdout
-            };
+            let detail = if !stderr.is_empty() { &stderr } else { &stdout };
             anyhow::bail!(
                 "claude CLI exited with {}: {}",
                 output.status,
@@ -301,11 +297,7 @@ impl AgentClient for TeamsClient {
         if !output.status.success() {
             let stderr = String::from_utf8_lossy(&output.stderr);
             let stdout = String::from_utf8_lossy(&output.stdout);
-            let detail = if !stderr.is_empty() {
-                &stderr
-            } else {
-                &stdout
-            };
+            let detail = if !stderr.is_empty() { &stderr } else { &stdout };
             error!("TeamsClient: claude exited with {}", output.status);
             anyhow::bail!(
                 "claude CLI (agent-teams) exited with {}: {}",
@@ -315,7 +307,10 @@ impl AgentClient for TeamsClient {
         }
 
         let text = String::from_utf8_lossy(&output.stdout).to_string();
-        info!("TeamsClient: session completed ({} bytes output)", text.len());
+        info!(
+            "TeamsClient: session completed ({} bytes output)",
+            text.len()
+        );
         Ok(text)
     }
 }
@@ -327,14 +322,12 @@ impl AgentClient for TeamsClient {
 pub fn create_client(mode: &ClientMode, api_key: Option<String>) -> Result<Box<dyn AgentClient>> {
     match mode {
         ClientMode::Api => {
-            let key =
-                api_key.context("ANTHROPIC_API_KEY is required when CLIENT_MODE=api")?;
+            let key = api_key.context("ANTHROPIC_API_KEY is required when CLIENT_MODE=api")?;
             Ok(Box::new(ApiClient::new(key)))
         }
         ClientMode::ClaudeCode => Ok(Box::new(CliClient::new())),
         ClientMode::Hybrid => {
-            let key =
-                api_key.context("ANTHROPIC_API_KEY is required when CLIENT_MODE=hybrid")?;
+            let key = api_key.context("ANTHROPIC_API_KEY is required when CLIENT_MODE=hybrid")?;
             Ok(Box::new(HybridClient::new(key)))
         }
         ClientMode::AgentTeams => Ok(Box::new(TeamsClient::new())),
@@ -385,10 +378,7 @@ mod tests {
             ClientMode::from_str("claude-code").unwrap(),
             ClientMode::ClaudeCode
         );
-        assert_eq!(
-            ClientMode::from_str("hybrid").unwrap(),
-            ClientMode::Hybrid
-        );
+        assert_eq!(ClientMode::from_str("hybrid").unwrap(), ClientMode::Hybrid);
         assert_eq!(
             ClientMode::from_str("agent-teams").unwrap(),
             ClientMode::AgentTeams

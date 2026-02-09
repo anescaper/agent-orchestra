@@ -37,8 +37,7 @@ impl Orchestrator {
         dotenvy::dotenv().ok();
 
         // Determine client mode (default: claude-code)
-        let client_mode_str =
-            env::var("CLIENT_MODE").unwrap_or_else(|_| "claude-code".to_string());
+        let client_mode_str = env::var("CLIENT_MODE").unwrap_or_else(|_| "claude-code".to_string());
         let global_mode = ClientMode::from_str(&client_mode_str)?;
 
         // API key (required for api/hybrid modes)
@@ -134,19 +133,16 @@ impl Orchestrator {
             let api_key = self.api_key.clone();
 
             // Each spawned task gets its own client
-            let client: Box<dyn AgentClient> = match create_agent_client(
-                task.client_mode.as_deref(),
-                &global_mode,
-                api_key,
-            ) {
-                Ok(c) => c,
-                Err(e) => {
-                    handles.push(tokio::spawn(async move {
-                        AgentResult::failed(agent_name, format!("{:?}", e), mode_label)
-                    }));
-                    continue;
-                }
-            };
+            let client: Box<dyn AgentClient> =
+                match create_agent_client(task.client_mode.as_deref(), &global_mode, api_key) {
+                    Ok(c) => c,
+                    Err(e) => {
+                        handles.push(tokio::spawn(async move {
+                            AgentResult::failed(agent_name, format!("{:?}", e), mode_label)
+                        }));
+                        continue;
+                    }
+                };
 
             let timeout_secs = task.timeout_seconds;
             let prompt = task.prompt.clone();
@@ -337,8 +333,8 @@ impl Orchestrator {
 
     fn save_results(&self, results: &[AgentResult]) -> Result<()> {
         let timestamp_str = self.timestamp.format("%Y%m%d-%H%M%S").to_string();
-        let is_team_mode = self.config.teams.enabled
-            && self.config.teams.definitions.contains_key(&self.mode);
+        let is_team_mode =
+            self.config.teams.enabled && self.config.teams.definitions.contains_key(&self.mode);
         let prefix = if is_team_mode {
             &self.config.teams.output_prefix
         } else {
