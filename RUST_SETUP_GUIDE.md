@@ -1,42 +1,55 @@
-# 🦀 Rust Agent Orchestra - Setup Guide
+# Rust Agent Orchestra - Setup Guide
 
-## 🎯 What This Is
-A high-performance, self-running AI agent orchestration system built in Rust that:
-- Runs blazingly fast with minimal memory footprint
-- Automatically coordinates multiple AI agents on a schedule
+## What This Is
+
+A multi-agent orchestration system built in Rust that:
+- Coordinates multiple AI agents (Claude) running in parallel or sequentially
+- Supports 4 client modes: CLI (free), HTTP API (paid), hybrid, and Agent Teams
+- Includes a FastAPI dashboard with 8 monitoring tabs and real-time WebSocket updates
+- Features an automated General Manager pipeline for multi-agent branch merging
 - Deploys to DigitalOcean with GitHub Actions
-- Produces reliable, production-ready results
 
-## 📁 Project Structure
+## Project Structure
 
 ```
 agent-orchestra/
-├── .github/
-│   └── workflows/
-│       └── rust-workflow.yml        # CI/CD pipeline
 ├── src/
-│   ├── main.rs                      # Main orchestrator
-│   ├── client.rs                    # Claude API client
-│   ├── agents.rs                    # Agent definitions
-│   └── config.rs                    # Configuration
+│   ├── main.rs                      # Orchestrator + parallel/sequential execution
+│   ├── client.rs                    # AgentClient trait + 4 implementations
+│   ├── agents.rs                    # AgentTask + AgentResult types
+│   └── config.rs                    # YAML config parsing (serde_yml)
+├── dashboard/
+│   ├── server.py                    # FastAPI REST + WebSocket + heartbeat
+│   ├── gm.py                       # General Manager pipeline
+│   ├── team_launcher.py            # Team session lifecycle
+│   ├── worktree.py                 # Git worktree operations
+│   ├── db.py                       # SQLite schema + queries
+│   ├── config.py                   # Dashboard configuration
+│   ├── orchestrator.py             # Rust binary subprocess control
+│   ├── watcher.py                  # File system monitoring
+│   ├── models.py                   # Pydantic API models
+│   ├── requirements.txt            # Python dependencies
+│   ├── static/                     # Frontend JS + CSS
+│   └── templates/                  # Jinja2 HTML
 ├── config/
-│   └── orchestra.yml                # Runtime configuration
-├── outputs/                         # Generated results
-├── Cargo.toml                       # Dependencies
-├── Cargo.lock                       # Lock file
-├── Dockerfile                       # Container image
-└── .env.example                     # Environment template
+│   └── orchestra.yml               # Master configuration
+├── scripts/
+│   ├── dashboard.sh                # Start dashboard
+│   ├── launch-team.sh              # Launch team session
+│   └── team-status.sh              # Check team status
+├── .github/workflows/
+│   └── rust-workflow.yml           # CI: fmt, clippy, test, build, deploy
+├── Dockerfile                      # Multi-stage build (Rust + Node.js runtime)
+├── Cargo.toml                      # Rust dependencies
+└── .env.example                    # Environment variables template
 ```
 
-## 🚀 Quick Start
+## Quick Start
 
 ### 1. Install Rust
 
 ```bash
-# Install Rust toolchain
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
-
-# Verify installation
 rustc --version
 cargo --version
 ```
@@ -44,96 +57,84 @@ cargo --version
 ### 2. Clone and Setup
 
 ```bash
-# Clone your repository
-git clone <your-repo-url>
+git clone https://github.com/anescaper/agent-orchestra.git
 cd agent-orchestra
-
-# Create environment file
 cp .env.example .env
-
-# Edit .env and add your API key
-nano .env
+# Edit .env — set ANTHROPIC_API_KEY if using api/hybrid mode
 ```
 
-### 3. Local Development
+### 3. Build and Run
 
 ```bash
-# Build the project
-cargo build
+# Build
+cargo build --release
 
-# Run tests
+# Run tests (15 tests)
 cargo test
 
-# Run locally
-cargo run
+# Run orchestrator
+ORCHESTRATOR_MODE=auto CLIENT_MODE=claude-code cargo run
 
-# Or with specific mode
-ORCHESTRATOR_MODE=research cargo run
-
-# Build optimized release
-cargo build --release
+# Install Python deps and start dashboard
+pip install -r dashboard/requirements.txt
+python3 -m dashboard.server
+# Dashboard at http://localhost:8080
 ```
 
-### 4. Project File Structure
+### 4. GitHub Secrets (for CI/CD)
 
-Create this directory structure:
+Add these to your GitHub repo (Settings > Secrets):
+
+| Secret | Required For |
+|--------|-------------|
+| `ANTHROPIC_API_KEY` | API/hybrid client modes |
+| `DO_API_TOKEN` | Docker build + push to DigitalOcean registry |
+| `DO_APP_ID` | DigitalOcean App Platform deployment |
+
+## Dependencies
+
+### Rust (Cargo.toml)
+
+| Crate | Version | Purpose |
+|-------|---------|---------|
+| `tokio` | 1.35 | Async runtime (full features) |
+| `reqwest` | 0.12 | HTTP client for API calls (rustls-tls) |
+| `serde` / `serde_json` | 1.0 | Serialization |
+| `serde_yml` | 0.0.12 | YAML config parsing |
+| `anyhow` | 1.0 | Error handling |
+| `tracing` / `tracing-subscriber` | 0.1 / 0.3 | Structured logging |
+| `chrono` | 0.4 | Timestamps (serde support) |
+| `dotenvy` | 0.15 | Environment variable loading |
+| `async-trait` | 0.1 | Async trait support |
+
+### Python (dashboard/requirements.txt)
+
+FastAPI, uvicorn, aiosqlite, pydantic, pyyaml, watchfiles, Jinja2
+
+## Client Modes
+
+| Mode | Implementation | Cost | Best For |
+|------|---------------|------|----------|
+| `claude-code` | `CliClient` — spawns `claude -p` subprocess | Free (subscription) | Simple monitoring tasks |
+| `api` | `ApiClient` — HTTP POST to Anthropic API | Paid per token | Analysis with system prompts |
+| `hybrid` | `HybridClient` — tries API, falls back to CLI | Flexible | Production reliability |
+| `agent-teams` | `TeamsClient` — CLI with Agent Teams enabled | Per session | Multi-agent collaboration |
+
+The CLI path is auto-detected: checks `CLAUDE_CLI_PATH` env, then `/usr/local/bin/claude`, `/home/claude/.local/bin/claude`, then falls back to `claude` on PATH.
+
+## Environment Variables
 
 ```bash
-mkdir -p src config outputs .github/workflows
+CLIENT_MODE=claude-code          # claude-code | api | hybrid | agent-teams
+ANTHROPIC_API_KEY=sk-ant-...     # Required for api/hybrid modes
+CLAUDE_CLI_PATH=/usr/local/bin/claude  # Optional: override CLI auto-detection
+ORCHESTRATOR_MODE=auto           # auto | research | analysis | monitoring | <team-name>
+DASHBOARD_HOST=127.0.0.1        # Dashboard bind address
+DASHBOARD_PORT=8080              # Dashboard port
+RUST_LOG=info                    # Log level
 ```
 
-Then place the files:
-- `src/main.rs` ← main.rs content
-- `src/client.rs` ← client.rs content
-- `src/agents.rs` ← agents.rs content
-- `src/config.rs` ← config.rs content
-- `config/orchestra.yml` ← your config file
-- `.github/workflows/rust-workflow.yml` ← CI/CD workflow
-- `Cargo.toml` ← dependencies
-- `Dockerfile` ← container config
-
-### 5. GitHub Setup
-
-Add these secrets to your GitHub repo (Settings → Secrets):
-
-```
-ANTHROPIC_API_KEY - Your Claude API key
-DO_API_TOKEN - DigitalOcean API token
-DO_APP_ID - DigitalOcean App ID (optional)
-```
-
-### 6. DigitalOcean Setup
-
-```bash
-# Install doctl
-curl -sL https://github.com/digitalocean/doctl/releases/download/v1.104.0/doctl-1.104.0-linux-amd64.tar.gz | tar -xzv
-sudo mv doctl /usr/local/bin
-
-# Authenticate
-doctl auth init
-
-# Create container registry
-doctl registry create agent-orchestra
-
-# (Optional) Create app
-doctl apps create --spec <(cat <<EOF
-name: agent-orchestra
-region: nyc
-services:
-- name: orchestrator
-  github:
-    repo: your-username/your-repo
-    branch: main
-  run_command: ./agent-orchestra
-  envs:
-  - key: ANTHROPIC_API_KEY
-    scope: RUN_TIME
-    type: SECRET
-EOF
-)
-```
-
-## 🎮 Usage
+## Usage
 
 ### Running Locally
 
@@ -144,7 +145,10 @@ cargo run
 # Specific mode
 ORCHESTRATOR_MODE=research cargo run
 
-# With logging
+# Agent Teams mode
+ORCHESTRATOR_MODE=feature-dev CLIENT_MODE=agent-teams cargo run
+
+# With debug logging
 RUST_LOG=debug cargo run
 
 # Production build
@@ -155,231 +159,97 @@ cargo build --release
 ### Running in Docker
 
 ```bash
-# Build image
 docker build -t agent-orchestra .
-
-# Run container
-docker run \
-  -e ANTHROPIC_API_KEY=your_key \
-  -e ORCHESTRATOR_MODE=auto \
-  -v $(pwd)/outputs:/app/outputs \
+docker run -p 8080:8080 \
+  -e CLIENT_MODE=claude-code \
+  -e ANTHROPIC_API_KEY=sk-ant-... \
   agent-orchestra
+```
+
+### Launch a Team Session
+
+```bash
+./scripts/launch-team.sh feature-dev "Add user authentication with JWT"
+./scripts/launch-team.sh code-review "Review the payment processing module"
+./scripts/launch-team.sh debug "Fix the timeout on /api/users endpoint"
+```
+
+### Launch a GM Project (via API)
+
+```bash
+curl -X POST http://localhost:8080/api/gm/launch \
+  -H "Content-Type: application/json" \
+  -d '{
+    "project_name": "my-project",
+    "repo_path": "/path/to/repo",
+    "build_command": "cargo build",
+    "test_command": "cargo test",
+    "agents": [
+      {"team": "feature-dev", "task": "Add user authentication"},
+      {"team": "feature-dev", "task": "Add database migrations"}
+    ]
+  }'
 ```
 
 ### GitHub Actions
 
-**Automatic (Scheduled):**
-- Runs every hour automatically
-- Set in `.github/workflows/rust-workflow.yml`
+The CI pipeline runs on:
+- Push to `main` (for `src/`, `Cargo.toml`, `config/` changes)
+- Hourly schedule
+- Manual dispatch
 
-**Manual Trigger:**
-1. Go to Actions → Rust Agent Orchestra Pipeline
-2. Click "Run workflow"
-3. Select mode: auto, research, analysis, or monitoring
+Jobs: `cargo fmt --check` → `cargo clippy -D warnings` → `cargo test` → `cargo build --release` → Docker build/push → DigitalOcean deploy
 
-**On Push:**
-- Automatically runs when you push to `main`
-- Builds, tests, and deploys
-
-## 🔧 Configuration
-
-### Schedule
-
-Edit `.github/workflows/rust-workflow.yml`:
-
-```yaml
-schedule:
-  - cron: '0 * * * *'     # Every hour (default)
-  # - cron: '*/30 * * * *'  # Every 30 minutes
-  # - cron: '0 */6 * * *'   # Every 6 hours
-  # - cron: '0 9 * * *'     # Daily at 9 AM
-```
-
-### Agent Tasks
-
-Edit `src/main.rs` in the `get_agent_tasks()` method:
-
-```rust
-"custom" => vec![
-    AgentTask::new(
-        "my_agent",
-        "Custom task prompt here"
-    ),
-],
-```
-
-### Config File
-
-Edit `config/orchestra.yml` for runtime settings:
-- Enable/disable agents
-- Set timeouts
-- Configure outputs
-- DigitalOcean settings
-
-## 📊 Performance
-
-**Rust vs Python:**
-- 🚀 **Speed:** ~10-50x faster
-- 💾 **Memory:** ~5-10x less
-- ⚡ **Startup:** Milliseconds vs seconds
-- 📦 **Binary:** ~5MB vs ~100MB+ with dependencies
-
-**Production Benefits:**
-- Minimal CPU usage on DigitalOcean
-- Lower costs (smaller droplets work fine)
-- Faster execution means quicker results
-- More reliable for long-running operations
-
-## 🛠️ Development Tips
+## Development
 
 ### Code Quality
 
 ```bash
-# Format code
-cargo fmt
-
-# Lint
-cargo clippy
-
-# Check without building
-cargo check
-
-# Watch mode (requires cargo-watch)
-cargo install cargo-watch
-cargo watch -x run
-```
-
-### Testing
-
-```bash
-# Run all tests
-cargo test
-
-# Run specific test
-cargo test test_name
-
-# With output
-cargo test -- --nocapture
+cargo fmt          # Format code
+cargo clippy       # Lint
+cargo check        # Type check without building
+cargo test         # Run all 15 tests
+cargo test -- --nocapture  # Tests with output
 ```
 
 ### Debugging
 
 ```rust
-// Add to any file
 use tracing::{debug, info, warn, error};
 
-// In code
 debug!("Debug message: {}", variable);
 info!("Info message");
 warn!("Warning!");
 error!("Error occurred: {}", error);
 ```
 
-## 🔍 Troubleshooting
+Set `RUST_LOG=debug` for verbose output.
+
+## Troubleshooting
 
 **Build fails?**
 ```bash
-cargo clean
-cargo build
+cargo clean && cargo build
 ```
 
 **API errors?**
-- Check `ANTHROPIC_API_KEY` is set
-- Verify API key is valid
-- Check network connectivity
+- Check `ANTHROPIC_API_KEY` is set and valid
+- Verify network connectivity
 
 **Docker issues?**
 ```bash
-# Rebuild without cache
 docker build --no-cache -t agent-orchestra .
-
-# Check logs
 docker logs <container-id>
 ```
 
 **GitHub Actions fails?**
 - Verify secrets are set correctly
 - Check workflow logs in Actions tab
-- Ensure Rust toolchain matches (1.75+)
+- Ensure Rust toolchain version is compatible (edition 2021)
 
-## 📈 Next Steps
-
-1. **Add custom agents** in `src/agents/`
-2. **Implement parallel execution** with `tokio::spawn`
-3. **Add database** for persistent storage
-4. **Set up monitoring** with Prometheus/Grafana
-5. **Add web API** for external triggering
-6. **Implement retries** for failed agents
-7. **Add metrics** collection
-
-## 🔗 Useful Commands
-
+**Stale worktrees?**
 ```bash
-# Update dependencies
-cargo update
-
-# Add dependency
-cargo add <crate-name>
-
-# Check outdated deps
-cargo install cargo-outdated
-cargo outdated
-
-# Benchmark
-cargo bench
-
-# Documentation
-cargo doc --open
-
-# Release build with all optimizations
-cargo build --release --target x86_64-unknown-linux-musl
+git worktree list
+git worktree remove --force <path>
+git branch -D <orphaned-branch>
 ```
-
-## 🎨 Customization Examples
-
-### Add a New Agent
-
-```rust
-// In src/main.rs, add to get_agent_tasks():
-"monitoring" => vec![
-    AgentTask::new(
-        "security_checker",
-        "Scan for security vulnerabilities and potential threats."
-    ),
-],
-```
-
-### Parallel Execution
-
-```rust
-// In src/main.rs orchestrate():
-use futures::future::join_all;
-
-let futures = tasks.into_iter()
-    .map(|task| self.run_agent(task));
-
-let results = join_all(futures).await;
-```
-
-### Add Retry Logic
-
-```rust
-// In client.rs:
-pub async fn send_message_with_retry(&self, prompt: &str) -> Result<String> {
-    for attempt in 1..=3 {
-        match self.send_message(prompt).await {
-            Ok(response) => return Ok(response),
-            Err(e) if attempt < 3 => {
-                tokio::time::sleep(Duration::from_secs(attempt * 2)).await;
-                continue;
-            }
-            Err(e) => return Err(e),
-        }
-    }
-    unreachable!()
-}
-```
-
----
-
-**Made with 🦀 Rust - Fast, Reliable, Productive**
