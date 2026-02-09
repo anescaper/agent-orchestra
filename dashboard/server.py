@@ -30,43 +30,68 @@ log = logging.getLogger("dashboard.server")
 class ConnectionManager:
     """Manage WebSocket connections for real-time updates."""
 
+    HEARTBEAT_INTERVAL = 30  # seconds between pings
+    HEARTBEAT_TIMEOUT = 10   # seconds to wait for pong
+
     def __init__(self):
         self._status_connections: list[WebSocket] = []
         self._log_connections: list[WebSocket] = []
         self._teams_connections: list[WebSocket] = []
         self._gm_connections: list[WebSocket] = []
+        self._all_connections: set[WebSocket] = set()
+        self._heartbeat_task: asyncio.Task | None = None
 
     async def connect_status(self, ws: WebSocket):
         await ws.accept()
         self._status_connections.append(ws)
+        self._all_connections.add(ws)
 
     async def connect_logs(self, ws: WebSocket):
         await ws.accept()
         self._log_connections.append(ws)
+        self._all_connections.add(ws)
 
     async def connect_teams(self, ws: WebSocket):
         await ws.accept()
         self._teams_connections.append(ws)
+        self._all_connections.add(ws)
+
+    def _remove_connection(self, ws: WebSocket):
+        """Remove a connection from all tracking lists."""
+        if ws in self._status_connections:
+            self._status_connections.remove(ws)
+        if ws in self._log_connections:
+            self._log_connections.remove(ws)
+        if ws in self._teams_connections:
+            self._teams_connections.remove(ws)
+        if ws in self._gm_connections:
+            self._gm_connections.remove(ws)
+        self._all_connections.discard(ws)
 
     async def connect_gm(self, ws: WebSocket):
         await ws.accept()
         self._gm_connections.append(ws)
+        self._all_connections.add(ws)
 
     def disconnect_status(self, ws: WebSocket):
         if ws in self._status_connections:
             self._status_connections.remove(ws)
+        self._all_connections.discard(ws)
 
     def disconnect_logs(self, ws: WebSocket):
         if ws in self._log_connections:
             self._log_connections.remove(ws)
+        self._all_connections.discard(ws)
 
     def disconnect_teams(self, ws: WebSocket):
         if ws in self._teams_connections:
             self._teams_connections.remove(ws)
+        self._all_connections.discard(ws)
 
     def disconnect_gm(self, ws: WebSocket):
         if ws in self._gm_connections:
             self._gm_connections.remove(ws)
+        self._all_connections.discard(ws)
 
     async def broadcast_status(self, data: dict):
         dead = []
@@ -107,6 +132,52 @@ class ConnectionManager:
                 dead.append(ws)
         for ws in dead:
             self.disconnect_gm(ws)
+
+    async def _ping_client(self, ws: WebSocket) -> bool:
+        """Send a ping and wait for pong. Returns True if client responded."""
+        try:
+            await ws.send_json({"type": "ping"})
+            msg = await asyncio.wait_for(ws.receive_text(), timeout=self.HEARTBEAT_TIMEOUT)
+            data = json.loads(msg)
+            return data.get("type") == "pong"
+        except Exception:
+            return False
+
+    async def _heartbeat_loop(self):
+        """Periodically ping all connected clients, disconnect unresponsive ones."""
+        while True:
+            await asyncio.sleep(self.HEARTBEAT_INTERVAL)
+            if not self._all_connections:
+                continue
+            # Snapshot current connections to avoid mutation during iteration
+            clients = list(self._all_connections)
+            results = await asyncio.gather(
+                *(self._ping_client(ws) for ws in clients),
+                return_exceptions=True,
+            )
+            for ws, alive in zip(clients, results):
+                if alive is not True:
+                    log.info("Heartbeat timeout, disconnecting client")
+                    self._remove_connection(ws)
+                    try:
+                        await ws.close()
+                    except Exception:
+                        pass
+
+    def start_heartbeat(self):
+        """Start the background heartbeat task."""
+        if self._heartbeat_task is None:
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+
+    async def stop_heartbeat(self):
+        """Stop the background heartbeat task."""
+        if self._heartbeat_task is not None:
+            self._heartbeat_task.cancel()
+            try:
+                await self._heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            self._heartbeat_task = None
 
 
 manager = ConnectionManager()
@@ -218,6 +289,9 @@ async def lifespan(app: FastAPI):
         )
     )
 
+    # Start WebSocket heartbeat
+    manager.start_heartbeat()
+
     ts = datetime.now(timezone.utc).isoformat()
     await db.insert_log(
         ts, "info",
@@ -228,6 +302,7 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown
+    await manager.stop_heartbeat()
     watcher_task.cancel()
     try:
         await watcher_task

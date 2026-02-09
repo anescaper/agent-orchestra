@@ -1439,6 +1439,10 @@
         wsStatus.onmessage = (e) => {
             try {
                 const data = JSON.parse(e.data);
+                if (data.type === "ping") {
+                    wsStatus.send(JSON.stringify({ type: "pong" }));
+                    return;
+                }
                 if (data.type === "new_execution") {
                     // Refresh overview if visible
                     const activePanel = document.querySelector(".panel.active");
@@ -1453,8 +1457,12 @@
         wsLogs = new WebSocket(`${base}/ws/logs`);
         wsLogs.onmessage = (e) => {
             try {
-                const entry = JSON.parse(e.data);
-                appendLogEntry(entry);
+                const data = JSON.parse(e.data);
+                if (data.type === "ping") {
+                    wsLogs.send(JSON.stringify({ type: "pong" }));
+                    return;
+                }
+                appendLogEntry(data);
             } catch {}
         };
 
@@ -1463,6 +1471,10 @@
         wsTeams.onmessage = (e) => {
             try {
                 const data = JSON.parse(e.data);
+                if (data.type === "ping") {
+                    wsTeams.send(JSON.stringify({ type: "pong" }));
+                    return;
+                }
                 if (data.type === "team_progress") {
                     handleTeamProgress(data);
                     captureGMAgentOutput(data);
